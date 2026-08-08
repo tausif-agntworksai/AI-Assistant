@@ -213,6 +213,12 @@ app.whenReady().then(async () => {
   }));
   ipcMain.handle("engine:listen", () => triggerListen());
   ipcMain.handle("window:hide", () => win?.hide());
+  // The HUD's own "turn off" button. `quitting` is what tells the close
+  // handler to stop hiding to the tray and actually let the app go.
+  ipcMain.handle("app:quit", () => {
+    quitting = true;
+    app.quit();
+  });
   ipcMain.handle("window:pin", (_e, pinned: boolean) => {
     win?.setAlwaysOnTop(Boolean(pinned));
     return Boolean(pinned);

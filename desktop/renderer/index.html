@@ -65,6 +65,13 @@
   }
   header button:hover { background: var(--panel-2); color: var(--text); }
   header button.on { color: var(--accent); }
+  header button.danger:hover { background: rgba(255, 95, 109, .14); color: var(--danger); }
+  /* Armed state: quitting kills the assistant outright, and this button sits
+     one pixel away from the one that merely hides it — so it asks first. */
+  header button.armed {
+    width: auto; padding: 0 8px; font-size: 11px; letter-spacing: .04em;
+    background: rgba(255, 95, 109, .16); color: var(--danger);
+  }
 
   /* ---- orb ---- */
   .stage {
@@ -218,7 +225,8 @@
   <span class="spacer"></span>
   <button id="pin" class="on" title="Always on top">📌</button>
   <button id="log" title="Open engine log">🗒</button>
-  <button id="hide" title="Hide to tray">✕</button>
+  <button id="hide" title="Keep running in the background — Jarvis stays awake in the tray">🗕</button>
+  <button id="quit" class="danger" title="Turn Jarvis off — stops listening completely">⏻</button>
 </header>
 
 <div class="stage">
@@ -442,6 +450,22 @@
   $("orb").onclick = () => window.jarvis.listen();
   $("hide").onclick = () => window.jarvis.hide();
   $("log").onclick = () => window.jarvis.openLog();
+
+  // Two-step, because this button is 26px from the one that just hides the
+  // window and the two outcomes are very different. Disarms on its own.
+  let armTimer = null;
+  const disarmQuit = () => {
+    clearTimeout(armTimer);
+    armTimer = null;
+    $("quit").classList.remove("armed");
+    $("quit").textContent = "⏻";
+  };
+  $("quit").onclick = () => {
+    if (armTimer) { disarmQuit(); window.jarvis.quit(); return; }
+    $("quit").classList.add("armed");
+    $("quit").textContent = "Turn off?";
+    armTimer = setTimeout(disarmQuit, 3500);
+  };
 
   let pinned = true;
   $("pin").onclick = async () => {

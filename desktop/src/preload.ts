@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld("jarvis", {
   info: (): Promise<EngineInfo> => ipcRenderer.invoke("engine:info"),
   listen: (): Promise<void> => ipcRenderer.invoke("engine:listen"),
   hide: (): Promise<void> => ipcRenderer.invoke("window:hide"),
+  quit: (): Promise<void> => ipcRenderer.invoke("app:quit"),
   pin: (pinned: boolean): Promise<boolean> => ipcRenderer.invoke("window:pin", pinned),
   openLog: (): Promise<string> => ipcRenderer.invoke("app:openLog"),
 

@@ -22,6 +22,9 @@ SILERO_URL = (
     "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
 )
 SILERO_FRAME = 512  # samples @ 16 kHz — the model accepts nothing else
+# v5 wants this much of the preceding frame prepended to each window.
+SILERO_CONTEXT_16K = 64
+SILERO_CONTEXT_8K = 32
 
 
 class VadBackend:
@@ -69,7 +72,13 @@ class EnergyVad(VadBackend):
 
 
 class SileroVad(VadBackend):
-    """Silero VAD via onnxruntime. Handles both the v4 and v5 model layouts."""
+    """Silero VAD via onnxruntime. Handles both the v4 and v5 model layouts.
+
+    v5 expects each 512-sample frame to arrive with the previous 64 samples
+    glued to its front. Omitting that context is not an error the model can
+    report - it just scores every frame near zero, which reads downstream as
+    permanent silence rather than as a bug.
+    """
 
     frame_size = SILERO_FRAME
 
@@ -77,6 +86,7 @@ class SileroVad(VadBackend):
         import onnxruntime as ort
 
         self.sample_rate = sample_rate
+        self.context_size = SILERO_CONTEXT_8K if sample_rate == 8000 else SILERO_CONTEXT_16K
         path = model_path or ensure_silero_model()
 
         opts = ort.SessionOptions()
@@ -96,19 +106,24 @@ class SileroVad(VadBackend):
     def reset(self) -> None:
         if self._is_v5:
             self._state = np.zeros((2, self._batch, 128), dtype=np.float32)
+            # Silence in front of the first frame, so the utterance starts clean.
+            self._context = np.zeros(self.context_size, dtype=np.float32)
         else:
             self._h = np.zeros((2, self._batch, 64), dtype=np.float32)
             self._c = np.zeros((2, self._batch, 64), dtype=np.float32)
 
     def probability(self, frame: np.ndarray) -> float:
-        x = frame.astype(np.float32, copy=False).reshape(1, -1)
-        if x.shape[1] != self.frame_size:
-            raise ValueError(f"Silero needs {self.frame_size} samples, got {x.shape[1]}")
+        frame = frame.astype(np.float32, copy=False).ravel()
+        if frame.shape[0] != self.frame_size:
+            raise ValueError(f"Silero needs {self.frame_size} samples, got {frame.shape[0]}")
 
         sr = np.array(self.sample_rate, dtype=np.int64)
         if self._is_v5:
+            x = np.concatenate((self._context, frame)).reshape(1, -1)
             out, self._state = self._session.run(None, {"input": x, "state": self._state, "sr": sr})
+            self._context = frame[-self.context_size:].copy()
         else:
+            x = frame.reshape(1, -1)
             out, self._h, self._c = self._session.run(
                 None, {"input": x, "h": self._h, "c": self._c, "sr": sr}
             )
