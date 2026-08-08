@@ -1,0 +1,38 @@
+# Secrets — never commit
+.env
+*.env
+!*.env.example
+config.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Downloaded models (large)
+models/
+*.onnx
+*.bin
+
+# Runtime data
+data/
+logs/
+*.log
+
+# Node / Electron
+node_modules/
+dist/
+release/
+out/
+
+# PyInstaller intermediates (~100 MB of scratch). desktop/build/ is kept —
+# it holds the icon electron-builder needs.
+engine/build/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

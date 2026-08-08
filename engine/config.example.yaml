@@ -1,0 +1,80 @@
+# JARVIS engine configuration.
+# Copy to config.yaml and edit. Every value here is the built-in default,
+# so an empty config.yaml behaves identically to this file.
+
+audio:
+  # null = pick automatically, skipping virtual inputs (DroidCam, Stereo Mix,
+  # VB-Audio and friends) that Windows sometimes makes the system default —
+  # choosing one of those means the assistant hears silence forever.
+  # To pin a device, use `--list-devices` and set an index or a name substring.
+  input_device: null
+  output_device: null
+  sample_rate: 16000
+  block_size: 512          # 32 ms frames; consumers re-window as they need
+
+wake_word:
+  enabled: true
+  model: hey_jarvis        # openWakeWord pretrained: hey_jarvis, alexa, hey_mycroft
+  threshold: 0.5           # raise toward 0.7 if it triggers on its own
+  cooldown_sec: 2.0        # ignore re-triggers for this long after a detection
+
+vad:
+  backend: silero          # silero | energy
+  threshold: 0.5           # silero speech probability
+  silence_ms: 700          # end the utterance after this much trailing silence
+  min_speech_ms: 250       # ignore blips shorter than this
+  max_utterance_sec: 15    # hard cap so a stuck mic can't record forever
+  preroll_ms: 300          # audio kept from *before* speech started
+
+stt:
+  backend: local           # local | cloud
+  # Benchmarked on a Ryzen 7 5850U: base = 0.63x realtime (~1.5s per spoken
+  # command), small = 2.0x (~4.6s) with no better Hindi accuracy. Raise to
+  # `small` only if longer dictation needs it.
+  model: base              # tiny | base | small | medium
+  compute_type: int8       # int8 is ~4x faster than float32 on this CPU
+  language: null           # null = auto-detect per utterance (needed for Hinglish)
+  beam_size: 1             # 1 = greedy = fastest; raise to 5 for accuracy
+  # More threads measured *slower* (16 threads ~40% worse than 4) — the model
+  # is small enough that thread oversubscription costs more than it gains.
+  cpu_threads: 4
+
+tts:
+  backend: edge            # edge | sapi | none
+  # Voices are chosen by the language Whisper detected in your command.
+  voice_hi: hi-IN-MadhurNeural
+  voice_en: en-IN-NeerjaNeural
+  rate: "+10%"
+  volume: "+0%"
+  barge_in: true           # saying the wake word mid-reply cuts the speech off
+
+brain:
+  enabled: true
+  model: claude-opus-5
+  # Effort trades latency for depth. "low" keeps spoken replies snappy;
+  # thinking stays ON deliberately — with it disabled this model can emit a
+  # tool call as plain text, which would silently never execute.
+  effort: low
+  # Headroom for thinking + the reply, since both count against this budget.
+  max_tokens: 2048
+  # Rule-matching confidence below which we escalate to the LLM.
+  # Higher = more traffic to Claude (smarter, slower, costs money).
+  rules_threshold: 78
+  history_turns: 6         # conversation turns kept for context
+
+permissions:
+  # Ask before running CONFIRM-tier skills (sleep, lock, close app).
+  confirm_tier_enabled: true
+  # CRITICAL-tier (shutdown, restart, delete, send message) always confirms.
+  # Set to true only if you really want unattended shutdowns.
+  allow_critical_without_confirm: false
+  confirm_timeout_sec: 12
+
+server:
+  host: 127.0.0.1
+  port: 8756               # WebSocket + HTTP for the Electron HUD
+
+assistant:
+  name: Jarvis
+  # Language for replies when detection is ambiguous: hi | en | auto
+  default_reply_language: auto

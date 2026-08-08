@@ -1,0 +1,54 @@
+# JARVIS engine dependencies — verified to have Python 3.14 / win_amd64 wheels.
+#
+# Two notable substitutions, both forced by cp314 wheel availability:
+#   PyAudio   -> sounddevice   (PyAudio ships no cp314 wheel)
+#   webrtcvad -> silero (ONNX)  (webrtcvad-wheels ships no cp314 wheel)
+# We deliberately do NOT depend on the `silero-vad` PyPI package: it pulls in
+# torch (~2 GB). We run the same model directly through onnxruntime instead.
+
+# --- Audio capture & playback ---
+sounddevice>=0.5.2
+numpy>=2.0
+scipy>=1.14
+
+# --- Wake word (local ONNX inference, no cloud) ---
+openwakeword>=0.6.0
+onnxruntime>=1.20
+
+# --- Speech to text (local, CPU int8) ---
+faster-whisper>=1.1.0
+
+# --- Text to speech ---
+edge-tts>=7.0.0
+pywin32>=311
+
+# --- Brain ---
+anthropic>=0.60.0
+
+# --- Windows control ---
+comtypes>=1.4.0
+pycaw>=20240210
+psutil>=6.0
+WMI>=1.5.1
+pyautogui>=0.9.54
+pyperclip>=1.9.0
+mss>=10.0
+
+# --- Bilingual matching ---
+rapidfuzz>=3.10
+indic-transliteration>=2.3.0
+
+# --- HUD transport ---
+fastapi>=0.115
+uvicorn>=0.32
+websockets>=13.0
+pydantic>=2.12
+pydantic-settings>=2.6
+PyYAML>=6.0.3
+python-dotenv>=1.0
+
+# --- Misc ---
+requests>=2.32
+
+# --- Dev ---
+pytest>=8.0

@@ -1,0 +1,118 @@
+"""Wake word detection — fully local ONNX inference.
+
+This is the privacy boundary of the whole assistant: while idle, audio is
+scored here and nowhere else. Nothing is transcribed, stored, or sent anywhere
+until this module reports a detection.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+
+import numpy as np
+
+log = logging.getLogger(__name__)
+
+# openWakeWord's feature extractor is built around 80 ms windows.
+OWW_FRAME = 1280
+
+AVAILABLE_MODELS = ("hey_jarvis", "alexa", "hey_mycroft", "hey_rhasspy")
+
+
+class WakeWordDetector:
+    frame_size: int = OWW_FRAME
+    available: bool = False
+
+    def detect(self, frame: np.ndarray) -> float:
+        """Return the detection score for this frame (0..1)."""
+        return 0.0
+
+    def reset(self) -> None:
+        pass
+
+
+class NullWakeWord(WakeWordDetector):
+    """Used when models can't be loaded. Hotkey and HUD click still work."""
+
+    available = False
+
+    def detect(self, frame: np.ndarray) -> float:
+        return 0.0
+
+
+class OpenWakeWord(WakeWordDetector):
+    frame_size = OWW_FRAME
+    available = True
+
+    def __init__(self, model: str = "hey_jarvis", threshold: float = 0.5,
+                 cooldown_sec: float = 2.0) -> None:
+        from openwakeword.model import Model
+
+        ensure_models(model)
+        self.model_name = model
+        self.threshold = threshold
+        self.cooldown_sec = cooldown_sec
+        self._last_fire = 0.0
+
+        self._model = Model(wakeword_models=[model], inference_framework="onnx")
+        # The key openWakeWord reports back is not always the string we passed
+        # (it uses the model filename stem, e.g. "hey_jarvis_v0.1").
+        self._key = next(
+            (k for k in self._model.models if model in k),
+            next(iter(self._model.models), model),
+        )
+        log.info("Wake word ready: %r (threshold %.2f)", self._key, threshold)
+
+    def detect(self, frame: np.ndarray) -> float:
+        # openWakeWord expects int16 PCM.
+        pcm = np.clip(frame * 32767.0, -32768, 32767).astype(np.int16)
+        scores = self._model.predict(pcm)
+        return float(scores.get(self._key, 0.0))
+
+    def triggered(self, frame: np.ndarray) -> bool:
+        """Score the frame and apply threshold + cooldown."""
+        score = self.detect(frame)
+        if score < self.threshold:
+            return False
+        now = time.monotonic()
+        if now - self._last_fire < self.cooldown_sec:
+            return False
+        self._last_fire = now
+        self.reset()  # clear feature buffers so the next detection starts clean
+        log.info("Wake word detected (score %.2f)", score)
+        return True
+
+    def reset(self) -> None:
+        try:
+            self._model.reset()
+        except Exception:  # noqa: BLE001 - older versions lack reset()
+            pass
+
+
+def ensure_models(model: str = "hey_jarvis") -> None:
+    """Download openWakeWord's models on first run.
+
+    Downloads the shared feature extractors plus the requested wake word. This
+    is the one network call the assistant makes before it can run offline.
+    """
+    import openwakeword.utils
+
+    try:
+        openwakeword.utils.download_models(model_names=[model])
+    except TypeError:
+        # Older signature takes no arguments and fetches everything.
+        openwakeword.utils.download_models()
+
+
+def create_wakeword(model: str = "hey_jarvis", threshold: float = 0.5,
+                    cooldown_sec: float = 2.0) -> WakeWordDetector:
+    """Build the detector, degrading to hotkey-only rather than failing."""
+    try:
+        return OpenWakeWord(model, threshold, cooldown_sec)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "Wake word unavailable (%s: %s) - use the hotkey or HUD to talk",
+            type(exc).__name__, exc,
+        )
+        return NullWakeWord()

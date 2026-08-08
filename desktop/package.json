@@ -1,0 +1,60 @@
+{
+  "name": "jarvis-desktop",
+  "productName": "Jarvis",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Jarvis — a bilingual voice assistant for Windows.",
+  "author": "Jarvis",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "npm run build && electron .",
+    "dev": "npm run build && electron . --dev",
+    "icon": "electron scripts/make-icon.mjs",
+    "build:engine": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-engine.ps1",
+    "dist": "npm run build && npm run icon && npm run build:engine && electron-builder --win"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.7.2"
+  },
+  "build": {
+    "appId": "ai.agntworks.jarvis",
+    "productName": "Jarvis",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "renderer/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../engine/dist/jarvis-engine",
+        "to": "engine"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Jarvis"
+    }
+  }
+}
