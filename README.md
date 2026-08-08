@@ -100,6 +100,19 @@ npm install
 npm start
 ```
 
+For a one-double-click launcher, add a Desktop shortcut:
+
+```powershell
+npm run shortcut                        # points at the packaged .exe if you've built one
+npm run shortcut -- -Source repo        # always run from this folder instead
+```
+
+`-Source repo` launches Electron against the repo, so `engine\config.yaml` and
+`engine\.env` are the ones it reads — handy while you're still editing them.
+`-Source packaged` requires `npm run dist` and keeps its settings in
+`%LOCALAPPDATA%\Jarvis` instead. The shortcut needs the repo to stay put; move
+the folder and you'll need to re-run this.
+
 First launch downloads ~150 MB of models (Whisper `base`, the wake word, and
 the VAD) into `%LOCALAPPDATA%\Jarvis\models`. After that it runs offline
 except for Claude and the neural voices.

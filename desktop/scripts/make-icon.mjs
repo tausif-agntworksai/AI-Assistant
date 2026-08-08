@@ -5,12 +5,17 @@
  * rasterise the SVG, so there's no image dependency to install.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, nativeImage } from "electron";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
+
+/** Software rendering keeps offscreen capture reliable on headless/RDP boxes;
+ *  without it capturePage() fails with UnknownVizError. */
+app.disableHardwareAcceleration();
 
 const SVG = `
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
@@ -44,48 +49,91 @@ const SVG = `
 </svg>`;
 
 const SIZES = [16, 24, 32, 48, 64, 128, 256];
+const RENDER_SIZE = 512;
 
-async function render(win, size) {
-  const dataUrl = `data:image/svg+xml;base64,${Buffer.from(SVG).toString("base64")}`;
-  await win.loadURL(
-    `data:text/html,<body style="margin:0;background:transparent">` +
-      `<img src="${dataUrl}" width="${size}" height="${size}">` +
-      `</body>`
-  );
-  // Offscreen windows still composite frames, but the first one lands a beat
-  // after load resolves; capturing immediately yields a blank image.
-  await new Promise((r) => setTimeout(r, 120));
-  return win.webContents.capturePage({ x: 0, y: 0, width: size, height: size });
+/** A fully transparent frame is a real bitmap, so isEmpty() won't catch the
+ *  blank first paint — check for actual drawn pixels instead. */
+function isBlank(image) {
+  const bitmap = image.toBitmap();
+  for (let i = 0; i < bitmap.length; i += 4) {
+    if (bitmap.readUInt32LE(i) !== bitmap.readUInt32LE(0)) return false;
+  }
+  return true;
 }
 
-app.whenReady().then(async () => {
-  // `offscreen: true` is what makes capturePage() work on a window that is
-  // never shown — on a plain hidden window the promise simply never settles.
+const settle = (contents) =>
+  contents.executeJavaScript(
+    `new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 250))))`
+  );
+
+/** Renders the SVG once at full size and returns it as a PNG buffer. */
+async function renderSource() {
+  const page = `<!doctype html><meta charset="utf-8"><style>
+      html,body{margin:0;width:${RENDER_SIZE}px;height:${RENDER_SIZE}px;background:transparent}
+      svg{display:block;width:${RENDER_SIZE}px;height:${RENDER_SIZE}px}
+    </style>${SVG}`;
+  // A real file, not a data: URL — the SVG leans on `url(#id)` gradient and
+  // filter references, which want a normal document base URL.
+  const tmp = path.join(os.tmpdir(), "jarvis-icon.html");
+  writeFileSync(tmp, page);
+
   const win = new BrowserWindow({
-    width: 512,
-    height: 512,
+    width: RENDER_SIZE,
+    height: RENDER_SIZE,
     show: false,
-    webPreferences: { offscreen: true },
+    frame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    // `offscreen: true` is what makes capturePage() work on a window that is
+    // never shown — on a plain hidden window the promise simply never settles.
+    webPreferences: { offscreen: true, backgroundThrottling: false },
   });
 
-  mkdirSync(path.join(root, "assets"), { recursive: true });
-  mkdirSync(path.join(root, "build"), { recursive: true });
+  await win.loadFile(tmp);
+  await settle(win.webContents);
 
-  const big = await render(win, 256);
-  writeFileSync(path.join(root, "assets", "icon.png"), big.toPNG());
-
-  // electron-builder needs a real multi-size .ico; nativeImage can only write
-  // PNG, so the sizes are assembled into an ICO container by hand.
-  const pngs = [];
-  for (const size of SIZES) {
-    const img = await render(win, size);
-    pngs.push({ size, buffer: img.toPNG() });
+  let image = await win.webContents.capturePage();
+  if (isBlank(image)) {
+    // Slow machine: give compositing another beat before giving up.
+    await settle(win.webContents);
+    image = await win.webContents.capturePage();
   }
-  writeFileSync(path.join(root, "build", "icon.ico"), buildIco(pngs));
+  win.destroy();
 
-  console.log("Wrote assets/icon.png and build/icon.ico");
-  app.quit();
-});
+  if (isBlank(image)) throw new Error("the icon SVG rendered blank — nothing to save.");
+  return image.toPNG();
+}
+
+app
+  .whenReady()
+  .then(async () => {
+    mkdirSync(path.join(root, "assets"), { recursive: true });
+    mkdirSync(path.join(root, "build"), { recursive: true });
+
+    // One render, then downscale: re-rendering per size gives every capture
+    // another chance to fail, and resizing is both faster and sharper.
+    const source = nativeImage.createFromBuffer(await renderSource());
+    const pngs = SIZES.map((size) => ({
+      size,
+      buffer: source.resize({ width: size, height: size, quality: "best" }).toPNG(),
+    }));
+
+    // electron-builder needs a real multi-size .ico; nativeImage can only write
+    // PNG, so the sizes are assembled into an ICO container by hand.
+    writeFileSync(path.join(root, "build", "icon.ico"), buildIco(pngs));
+    writeFileSync(
+      path.join(root, "assets", "icon.png"),
+      pngs.find((p) => p.size === 256).buffer
+    );
+
+    console.log("Wrote assets/icon.png and build/icon.ico");
+    // exit(), not quit() — a failure here must not leave Electron alive forever.
+    app.exit(0);
+  })
+  .catch((err) => {
+    console.error(err);
+    app.exit(1);
+  });
 
 /** Packs PNG buffers into an .ico container. */
 function buildIco(entries) {

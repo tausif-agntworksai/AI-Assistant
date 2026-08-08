@@ -12,6 +12,7 @@
     "dev": "npm run build && electron . --dev",
     "icon": "electron scripts/make-icon.mjs",
     "build:engine": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-engine.ps1",
+    "shortcut": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/make-shortcut.ps1",
     "dist": "npm run build && npm run icon && npm run build:engine && electron-builder --win"
   },
   "devDependencies": {
