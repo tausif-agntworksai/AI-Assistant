@@ -167,20 +167,28 @@ def cmd_test_mic(seconds: float) -> int:
     from .config import settings
     from .stt import create_transcriber
 
+    from .audio.enhance import is_too_quiet, speech_rms
+
     device = resolve_device(settings.audio.input_device, "input")
     print(f"Recording {seconds:.0f}s — speak now...")
     recording = sd.rec(int(seconds * 16000), samplerate=16000, channels=1,
                        dtype="float32", device=device)
     sd.wait()
     audio = np.asarray(recording).ravel()
-    print(f"Captured {audio.shape[0] / 16000:.1f}s, peak {np.abs(audio).max():.3f}")
 
-    if np.abs(audio).max() < 0.01:
-        print("\n  That's almost silent — check the microphone in config.yaml"
-              " (see --list-devices).\n")
+    level = speech_rms(audio, 16000)
+    print(f"Captured {audio.shape[0] / 16000:.1f}s, peak {np.abs(audio).max():.3f}, "
+          f"speech level {20 * np.log10(max(level, 1e-6)):.0f} dBFS")
+
+    if is_too_quiet(audio, 16000):
+        print("\n  That is too quiet for reliable recognition. Raise the input\n"
+              "  level in Windows sound settings, move closer, or pick a\n"
+              "  different microphone (see --list-devices).\n")
 
     transcript = create_transcriber().transcribe(audio, 16000)
     print(f"\n  language : {transcript.language} ({transcript.language_probability:.2f})")
+    print(f"  certainty: {transcript.confidence:.2f}   (below 0.62 triggers a re-decode)")
+    print(f"  backend  : {transcript.backend}")
     print(f"  text     : {transcript.text!r}\n")
     return 0
 
@@ -257,7 +265,14 @@ def cmd_doctor() -> int:
     whisper_dir = paths.MODELS_DIR / "whisper"
     line(ok if whisper_dir.exists() else warn, "whisper",
          f"cached ({settings.stt.model})" if whisper_dir.exists()
-         else f"will download {settings.stt.model} (~500 MB) on first run")
+         else f"will download {settings.stt.model} (~150 MB) on first run")
+    if settings.stt.escalate and settings.stt.accurate_model:
+        line(ok, "whisper (accurate pass)",
+             f"{settings.stt.accurate_model}, used below "
+             f"{settings.stt.min_confidence:.2f} confidence")
+    else:
+        line(warn, "whisper (accurate pass)",
+             "off — unclear speech won't get a second opinion")
     silero = paths.MODELS_DIR / "silero_vad.onnx"
     line(ok if silero.exists() else warn, "silero vad",
          "cached" if silero.exists() else "will download (~2 MB) on first run")
@@ -284,6 +299,28 @@ def cmd_doctor() -> int:
              f"{by_risk.get('critical', 0)} critical)")
     except Exception as exc:  # noqa: BLE001
         line(fail, "skill registry", str(exc))
+        problems += 1
+
+    print("\nPermissions")
+    try:
+        from .permissions import Capability, consent
+        from .security import session
+
+        snapshot = consent.snapshot()
+        if not snapshot["asked"]:
+            line(warn, "capability consent",
+                 "not recorded yet — everything is allowed (command-line mode)")
+        else:
+            granted = [c for c in Capability if snapshot["granted"][c.value]]
+            denied = [c for c in Capability if not snapshot["granted"][c.value]]
+            line(ok, "capability consent", f"{len(granted)} of {len(Capability)} granted")
+            if denied:
+                line(warn, "  turned off", ", ".join(c.value for c in denied))
+        line(ok if not settings.security.session_required else
+             (ok if session.active else warn), "sign-in required",
+             "yes" if settings.security.session_required else "no (command-line mode)")
+    except Exception as exc:  # noqa: BLE001
+        line(fail, "permissions", str(exc))
         problems += 1
 
     print("\nSecrets")

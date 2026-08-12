@@ -10,17 +10,23 @@ from __future__ import annotations
 from .normalize import normalize
 
 _YES = {
-    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "affirmative", "confirm",
-    "confirmed", "go", "go ahead", "do it", "please do", "correct", "right",
-    "haan", "han", "haa", "ha", "ji", "ji haan", "bilkul", "theek", "theek hai",
-    "thik hai", "sahi", "kar do", "karo", "kar dijiye", "chalo", "acha",
+    "yes", "yeah", "yep", "yup", "ya", "yah", "sure", "ok", "okay", "affirmative",
+    "confirm", "confirmed", "go", "go ahead", "do it", "please do", "correct",
+    "right", "alright", "fine", "of course", "definitely", "absolutely",
+    "yes please", "carry on", "proceed", "continue",
+    "haan", "han", "haa", "ha", "hanji", "han ji", "ji", "ji haan", "ji han",
+    "bilkul", "bilkul karo", "theek", "theek hai", "thik hai", "thik", "sahi",
+    "sahi hai", "kar do", "kardo", "karo", "kar dijiye", "kar dijie", "chalo",
+    "acha", "achha", "haan karo", "haan kar do", "zaroor", "jaroor",
 }
 
 _NO = {
     "no", "nope", "nah", "cancel", "stop", "don't", "dont", "do not", "abort",
-    "never mind", "nevermind", "forget it", "wait", "negative",
-    "nahi", "nai", "na", "mat", "mat karo", "rehne do", "rehne de", "ruko",
-    "chhodo", "chodo", "cancel karo", "nahi karo", "bilkul nahi",
+    "never mind", "nevermind", "forget it", "wait", "negative", "not now",
+    "no thanks", "no thank you", "leave it", "hold on",
+    "nahi", "nahin", "nahim", "nai", "na", "mat", "mat karo", "mat kar",
+    "rehne do", "rehne de", "rahne do", "ruko", "ruk jao",
+    "chhodo", "chodo", "cancel karo", "nahi karo", "bilkul nahi", "abhi nahi",
 }
 
 

@@ -33,23 +33,38 @@ class WakeWordConfig(BaseModel):
 class VadConfig(BaseModel):
     backend: Literal["silero", "energy"] = "silero"
     threshold: float = 0.5
-    silence_ms: int = 700
-    min_speech_ms: int = 250
+    silence_ms: int = 650
+    # Used instead of `silence_ms` while barely any speech has happened yet,
+    # which is what a false start or a mid-thought pause looks like. Cutting
+    # "chrome… kholo" in half is the most common way a command gets lost.
+    patience_silence_ms: int = 1300
+    min_speech_ms: int = 200
     max_utterance_sec: int = 15
-    preroll_ms: int = 300
+    # Audio kept from *before* speech started. Generous, because the wake word
+    # and the command usually arrive in one breath.
+    preroll_ms: int = 600
+    # How long to wait for someone to start talking before giving up on a turn.
+    no_speech_timeout_sec: float = 6.0
 
 
 class SttConfig(BaseModel):
     backend: Literal["local", "cloud"] = "local"
-    # Measured on this machine: `base` runs at ~0.63x realtime (~1.5s for a
-    # spoken command) while `small` runs at ~2.0x (~4.6s) — and `small` was no
-    # more accurate on Hindi commands. Latency is what makes a voice assistant
-    # feel alive, so `base` is the default; raise to `small` if accuracy on
-    # longer dictation matters more.
+    # The fast tier: what every utterance is decoded with first. Measured on
+    # this machine at ~0.63x realtime (~1.5s for a spoken command).
     model: str = "base"
+    # The accurate tier: only reached when the fast pass comes back unsure, or
+    # when the words it produced matched no skill. ~2.0x realtime, so paying
+    # for it on every utterance would be the wrong trade — paying for it on
+    # the 10% that would otherwise need repeating is the right one.
+    accurate_model: str = "small"
+    escalate: bool = True
+    # Decoder confidence (exp of the mean per-token logprob) below which the
+    # accurate tier is consulted. A clean short command sits around 0.75-0.9.
+    min_confidence: float = 0.62
     compute_type: str = "int8"
     language: str | None = None
-    beam_size: int = 1
+    beam_size: int = 3
+    best_of: int = 3
     # More is not better: 16 threads measured ~40% slower than 4 on this
     # 8-core CPU, from oversubscription.
     cpu_threads: int = 4
@@ -103,9 +118,33 @@ class ServerConfig(BaseModel):
     port: int = 8756
 
 
+class SecurityConfig(BaseModel):
+    """Whether the engine refuses to listen until someone has signed in.
+
+    Off by default so `python -m jarvis` from a terminal still works — running
+    the program by hand is its own authorisation. The desktop app sets
+    `JARVIS_REQUIRE_SESSION=1` when it spawns the engine, which turns it on for
+    every launch that goes through the installed application.
+    """
+
+    require_session: bool = False
+
+    @property
+    def session_required(self) -> bool:
+        raw = os.environ.get("JARVIS_REQUIRE_SESSION", "").strip().lower()
+        if raw in ("1", "true", "yes", "on"):
+            return True
+        if raw in ("0", "false", "no", "off"):
+            return False
+        return self.require_session
+
+
 class AssistantConfig(BaseModel):
     name: str = "Jarvis"
     default_reply_language: Literal["hi", "en", "auto"] = "auto"
+    # Seconds to keep listening after a reply, so a correction or a second
+    # command needs no wake word. 0 disables it.
+    followup_sec: float = 6.0
 
 
 class Settings(BaseModel):
@@ -116,6 +155,7 @@ class Settings(BaseModel):
     tts: TtsConfig = Field(default_factory=TtsConfig)
     brain: BrainConfig = Field(default_factory=BrainConfig)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     assistant: AssistantConfig = Field(default_factory=AssistantConfig)
 

@@ -19,20 +19,26 @@ loud in whichever language you used.
 
 Two processes. The **engine** (Python) owns the microphone, the models and
 every Windows action. The **desktop app** (Electron) is the face — it spawns
-and supervises the engine and renders its state. They talk over a localhost
-WebSocket, so the UI holds no logic of its own and can reconnect freely.
+and supervises the engine, holds the sign-in, and renders its state. They talk
+over a localhost WebSocket, so the UI holds no logic of its own and can
+reconnect freely.
 
 ```
                  ┌──────────────── engine (Python) ────────────────┐
   microphone ──▶ │ wake word → VAD → Whisper → rules ─┬─▶ skill    │ ──▶ Windows
                  │   (all local)                      └─▶ Claude   │
-                 │                                                 │ ──▶ speech out
-                 └────────────────────┬────────────────────────────┘
-                          ws://127.0.0.1:8756
+                 │  ▲                                              │ ──▶ speech out
+                 └──┼──────────────────┬────────────────────────────┘
+        unlock ─────┘   http + ws://127.0.0.1:8756  (bearer token required)
                  ┌────────────────────┴────────────────────────────┐
-                 │ desktop app (Electron): orb, transcript, tray   │
+                 │ desktop app: sign-in, permissions, orb, tray    │
                  └─────────────────────────────────────────────────┘
 ```
+
+The microphone is the thing sign-in protects. The engine boots with its
+listening loop shut and opens it only when the app says a verified, approved
+person is present — so the login screen is not a page you click past, it is
+what decides whether the machine is listening at all.
 
 **Nothing is recorded or sent anywhere until the wake word fires.** While
 idle, audio lives in a ring buffer and is scored by a local ONNX model. No
@@ -42,14 +48,19 @@ transcription, no storage, no network.
 
 ```
 IDLE ──"hey jarvis" | Ctrl+Alt+J | click the orb──▶ LISTENING
-LISTENING ──~700 ms of silence──▶ THINKING ──▶ ACTING ──▶ SPEAKING ──▶ IDLE
-                                     │
-                     rules match? ───┴─── no ──▶ Claude picks a tool
+LISTENING ──trailing silence──▶ THINKING ──▶ ACTING ──▶ SPEAKING ──▶ IDLE
+                                     │                        │
+                     rules match? ───┴─── no ──▶ Claude       └──▶ FOLLOW-UP
+                                                                (no wake word)
 ```
 
 Common commands never leave the machine: `“chrome kholo”` is matched by local
 rules in microseconds, with no API call and no cost. Only phrasings the rules
 don't recognise go to Claude.
+
+For six seconds after it finishes speaking, Jarvis keeps listening without the
+wake word, so a correction (`“nahi, chrome”`) or a second command lands
+straight away.
 
 ### Understanding two languages at once
 
@@ -64,6 +75,61 @@ kholo”).
   "open chrome"                                      ├──▶  open_app(app="chrome")
   "chrome chalu karo"                                ──┘
 ```
+
+**It answers in the language you used.** Whisper's own language label is close
+to a coin flip on a two-word romanised command — it called *“Chrome kholo”*
+Polish in testing — so the label is one input, not the answer.
+`nlu/normalize.detect_language` decides in a fixed order: Devanagari on screen
+settles it; then distinctive romanised Hindi (*kholo*, *kitna*, *karo*); then
+a confident Whisper label, including the languages Hindi gets mistaken for;
+then distinctive English words; and finally the language the conversation was
+already in, so `“aur battery?”` doesn't reset to English. Claude is told the
+answer explicitly rather than left to infer it from words that look like both.
+
+---
+
+## Being understood the first time
+
+Whisper's response to a quiet or clipped recording is not "I'm not sure" — it
+is a confident transcription of the wrong words. Four things attack that, in
+the order the sound meets them.
+
+**The recording is conditioned before recognition** (`audio/enhance.py`). Desk
+rumble below 80 Hz is removed, the speech is brought up from a laptop
+microphone's typical −38 dBFS to the −20 dBFS Whisper expects, and a quarter
+second of silence is padded onto each end because the model regularly drops
+the first phoneme of a clip that starts on speech. Gain is capped so silence
+is never amplified into hiss the model can hallucinate onto.
+
+**The endpoint adapts.** A fixed silence window is wrong in both directions:
+cut early and *“chrome… kholo”* arrives as *“chrome”*, which routes nowhere;
+wait long and every command feels slow. The window starts at 650 ms and
+stretches to 1.3 s only while barely any speech has happened yet — which is
+what a mid-thought pause looks like and what a finished command doesn't.
+
+**Recognition has two tiers.** Every utterance is decoded by `base` first.
+Only the ones that come back with low decoder confidence — or whose words
+matched no skill at all — are re-decoded from the *same recording* by `small`.
+Nobody speaks twice; the machine listens twice.
+
+```
+  fast pass ──confident? and it meant something?──▶ done      (~90% of commands)
+                    │
+                    └── no ──▶ accurate pass ──▶ best of the two
+```
+
+**And it says so when it fails.** A transcript that survives none of the above
+gets *“Sorry — say that again?”* and an open microphone, not silence and a
+fresh wake word. After two of those it stops asking, because by then the
+problem is the room. The HUD also says outright when the microphone is muted,
+blocked by Windows privacy settings, or simply too quiet — failures that are
+otherwise completely silent.
+
+One bug fixed here is worth naming: `“haan”`, `“ji”` and `“ok”` are all on the
+list of things Whisper invents out of silence, so the filter that removes that
+noise was deleting every spoken *yes* — and the confirmation gate reads
+anything that isn't a clear yes as a refusal. Answers to a confirmation are
+now transcribed in a mode that keeps them.
 
 ---
 
@@ -96,9 +162,13 @@ For the full app with the HUD:
 
 ```powershell
 cd ..\desktop
+copy .env.example .env      # then paste your Firebase web config into it
 npm install
 npm start
 ```
+
+First launch asks which capabilities Jarvis may use, then (if Firebase is
+configured) for a sign-in. Nothing listens until both are answered.
 
 For a one-double-click launcher, add a Desktop shortcut:
 
@@ -137,13 +207,95 @@ Run the tests with `python -m pytest` from `engine\`.
 
 ---
 
+## Signing in
+
+If `desktop\.env` names a Firebase project, Jarvis will not open the
+microphone until someone with a verified, admin-approved account is signed in.
+The gate is the same one the AI Calculator enforces, in the same order:
+
+```
+sign in → verified email → admin approval → [authenticator app] → microphone opens
+```
+
+Point it at the same Firebase project as the AI Calculator and one account
+covers both: approving someone from the calculator's **Manage access**
+dashboard sets the `approved` custom claim, which Jarvis reads out of the ID
+token. There is no server here to write that claim, so Jarvis files its own
+pending request straight into Firestore — safe because `firestore.rules` runs
+on Google's servers and lets you create only a *pending* request, only for
+your own uid, only with your own verified email.
+
+Copy `desktop\.env.example` to `desktop\.env` and fill in the web app config
+from Firebase console → Project settings → Your apps. Leave it blank and
+Jarvis runs unlocked and says so on screen, rather than showing a sign-in
+prompt that couldn't succeed.
+
+Where the security actually is:
+
+- **The refresh token never reaches a page.** It lives in the Electron main
+  process, encrypted at rest with `safeStorage` — DPAPI, keyed to your Windows
+  account. If the OS can't provide encryption, nothing is written at all;
+  signing in again tomorrow beats a plaintext credential on disk.
+- **Every launch re-checks with Firebase.** That is what makes a session read
+  from disk trustworthy, and where a disabled or revoked account stops
+  working — within one refresh cycle, not at the next restart. Offline, the
+  last verified session is reused for seven days and then asks.
+- **The engine's API needs a bearer token**, minted per launch and handed over
+  through the environment. Loopback is not a boundary on a desktop: any page
+  in any browser can `fetch("http://127.0.0.1:8756/command")`, and that API
+  can shut the machine down. A web page can't read the token, and a request
+  carrying any real browser `Origin` is refused outright even if it somehow
+  could. Renderers are sandboxed, `contextIsolation` is on, every Chromium
+  permission request is denied, and API keys are stripped from the log the
+  moment they appear.
+- **The audit log records the account.** On a shared machine, the history says
+  who asked for what.
+
+---
+
 ## Permissions
 
-An always-listening program that can shut down your machine needs one place
-where every action is classified — not a judgement call scattered across
-seventy skill functions. Each skill declares a risk tier, and
-`registry.execute()` is the single chokepoint that enforces it and writes the
-audit log (visible in the HUD's Activity tab).
+An always-listening program that can shut down your machine, type into the
+focused window and open WhatsApp is asking for a lot of trust, and the honest
+time to ask for it is before it starts. On first launch — and any time after,
+from the tray — Jarvis shows every capability it has, what each one unlocks,
+and a switch.
+
+| | |
+|---|---|
+| Microphone, Speakers | hear you, answer out loud |
+| Internet | Claude, weather, news, the neural voices |
+| Apps, Windows | open/close/switch apps, manage windows |
+| Device readings, Windows settings | battery and CPU, brightness and night light |
+| Running system commands | PowerShell in the background — Windows exposes brightness, wi-fi and the Store-app list no other way |
+| Your files, Screenshots | open and search your folders, capture the screen |
+| Clipboard, Typing for you | *off by default* |
+| Power controls | lock, sleep, sign out, restart, shut down |
+| Messaging | *off by default* — never sends, only prepares |
+| Camera | *off, and unused* — listed so a future camera feature arrives switched off |
+
+These are enforced by the engine, not drawn by the UI: each id maps to a
+`Capability` in `permissions.py`, and `registry.execute()` refuses a skill
+whose capability is off — *before* the confirmation prompt, so turning one off
+removes the ability rather than adding a question. Command-line access is
+enforced at `winutil.run()`, the single place the assistant shells out.
+
+Running the engine straight from a terminal leaves no consent file, and that
+is treated as "not asked", which allows everything. Typing `python -m jarvis`
+is its own consent; silently refusing to work for someone who launched it by
+hand would be a puzzle, not a safeguard.
+
+Windows has its own switch for the microphone and camera, and consent here
+means nothing if that one is off — the stream opens and delivers digital
+silence forever. The permission screen checks it and links straight to the
+Windows privacy page when it's blocking.
+
+### Risk tiers
+
+Separately from *may it*, every action is classified by *how bad if it
+misheard*. Each skill declares a tier, and `registry.execute()` is the single
+chokepoint that enforces it and writes the audit log (visible in the HUD's
+Activity tab).
 
 | Tier | Behaviour | Examples |
 |---|---|---|
@@ -228,9 +380,14 @@ Notable settings:
 | Setting | Default | Why |
 |---|---|---|
 | `audio.input_device` | `null` | Picks a real mic automatically, skipping virtual inputs (DroidCam, Stereo Mix, VB-Audio) that Windows sometimes makes the default. Pin one with `--list-devices`. |
-| `stt.model` | `base` | Benchmarked on this laptop: `base` = 0.63× realtime (~1.5 s per command), `small` = 2.0× (~4.6 s) with no better Hindi accuracy. |
+| `stt.model` | `base` | The fast pass. Benchmarked here at 0.63× realtime (~1.5 s per command). |
+| `stt.accurate_model` | `small` | The second opinion, ~2.0× realtime. Only reached when the fast pass is unsure or its words matched no skill, so most commands never pay for it. Set to `""` to turn escalation off. |
+| `stt.min_confidence` | `0.62` | Decoder confidence below which the accurate pass runs. A clean short command sits around 0.75–0.9. |
 | `stt.cpu_threads` | `4` | More was measurably *slower* — 16 threads ran ~40% worse than 4. |
-| `wake_word.threshold` | `0.5` | Raise toward 0.7 if it triggers on its own. |
+| `vad.patience_silence_ms` | `1300` | The longer endpoint used while barely any speech has happened, so a pause between “chrome” and “kholo” doesn't end the turn. |
+| `assistant.followup_sec` | `6` | How long the microphone stays open after a reply, so a correction needs no wake word. `0` disables it. |
+| `wake_word.threshold` | `0.5` | Lower is more sensitive; raise toward 0.7 if it triggers on its own. |
+| `security.require_session` | `false` | Refuse to open the microphone until someone signs in. The desktop app turns this on for its own launches; leaving it false keeps `python -m jarvis` usable from a terminal. |
 | `brain.model` | `claude-opus-5` | Thinking stays on: with it disabled this model can emit a tool call as plain text that silently never runs. |
 | `brain.effort` | `low` | Keeps spoken replies quick. |
 | `tts.voice_hi` | `hi-IN-MadhurNeural` | This machine has no Hindi SAPI voice, so Windows can't speak Hindi offline. |
@@ -257,11 +414,14 @@ pass, so a broken bundle can't reach an installer.
 
 ## Known limits
 
-- **Hindi speech recognition is imperfect on the `base` model.** Short Hindi
-  commands transcribe well; longer ones can garble. Those fall through to
-  Claude, which usually recovers the intent. Set `stt.model: small` to trade
-  ~3× latency for some accuracy, or add a cloud key (below) for the best
-  Hinglish accuracy.
+- **Hindi speech recognition is imperfect.** Short Hindi commands transcribe
+  well; longer ones can garble. The `small` re-decode and Claude between them
+  usually recover the intent, but the first pass is still a `base` model.
+  Setting `stt.model: small` makes every utterance accurate and slow; adding a
+  cloud key (below) gives the best Hinglish accuracy of all.
+- **The accurate tier is a ~480 MB download**, fetched in the background on
+  first launch behind an assistant that already works. `stt.escalate: false`
+  skips it entirely.
 - **Optional cloud recognition.** Set `CLOUD_STT_PROVIDER` (`openai` or
   `deepgram`) and `CLOUD_STT_API_KEY` in `.env` and the local model gets a
   cloud retry whenever it comes back empty — audio only leaves the machine
@@ -288,16 +448,25 @@ engine/
   jarvis/
     orchestrator.py     the listening state machine; where everything meets
     audio/              capture, wake word, VAD, playback, decoding
+      enhance.py        conditioning that makes a quiet clip recognisable
     stt/                faster-whisper + the guards against its failure modes
+      tiered.py         fast pass, then the accurate one when it wobbles
     tts/                Edge neural voices, SAPI fallback
-    nlu/                normalise → rules → Claude
+    nlu/                normalise → detect language → rules → Claude
     skills/             every capability, one module per category
-    permissions.py      risk tiers, the confirmation gate, the audit log
+    permissions.py      capability consent, risk tiers, the audit log
+    security.py         the API token, the session lock, redaction
     app_index.py        fuzzy index of installed apps
     server.py           localhost HTTP + WebSocket API for the HUD
   tests/                pytest suite
 desktop/
-  src/main.ts           window, tray, global hotkey
+  src/main.ts           windows, tray, hotkey, and which screen you're on
   src/engine.ts         spawns and supervises the Python engine
+  src/config.ts         the Firebase project and the admin allowlist
+  src/consent.ts        the capability manifest and its store
+  src/auth/             Firebase over REST, and the session that gates the mic
+  renderer/auth.html    sign in, verify, wait for approval, enrol 2FA
+  renderer/consent.html the first-run permission screen
   renderer/index.html   the HUD
+  build/permissions.txt shown by the installer, before anything is installed
 ```

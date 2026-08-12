@@ -4,11 +4,23 @@
 import pytest
 
 from jarvis.nlu.confirm import is_affirmative, is_negative
-from jarvis.permissions import PermissionGate, Risk
+from jarvis.permissions import Capability, PermissionGate, Risk, capability_for, consent
 from jarvis.skills import load_all, registry
 from jarvis.skills.registry import SkillContext
 
 load_all()
+
+
+@pytest.fixture
+def consent_store():
+    """Restores the process-wide consent singleton after a test changes it."""
+    before = consent.snapshot()
+    yield consent
+    if before["asked"]:
+        consent.save(before["granted"])
+    else:
+        consent.path.unlink(missing_ok=True)
+        consent.load()
 
 
 class _Config:
@@ -59,6 +71,41 @@ def test_every_destructive_skill_is_gated():
         spec = registry.get(name)
         assert spec is not None, f"{name} is missing from the registry"
         assert spec.risk is not Risk.SAFE, f"{name} is ungated"
+
+
+def test_every_skill_declares_a_capability_or_is_purely_local():
+    """A skill nobody classified would silently escape the consent screen."""
+    local_only = {"productivity", "general"}
+    for spec in registry.all():
+        if spec.category in local_only:
+            continue
+        assert spec.capability is not None, (
+            f"{spec.name} ({spec.category}) reaches the machine but maps to no "
+            "capability, so the permission screen can't cover it"
+        )
+
+
+def test_a_revoked_capability_blocks_the_skill(consent_store):
+    """Consent is enforced in the engine, not just drawn in the UI."""
+    consent_store.save({c.value: True for c in Capability})
+    assert capability_for("shutdown_pc", "system") is Capability.POWER
+
+    consent_store.save({**{c.value: True for c in Capability},
+                        Capability.POWER.value: False})
+    result = registry.execute("shutdown_pc", {}, SkillContext())
+    assert not result.ok
+    assert "permission" in result.reply.en.lower()
+    # ...and it is refused before anyone is asked to confirm, so revoking the
+    # capability removes the ability rather than adding a question.
+    assert result.detail == f"capability:{Capability.POWER.value}"
+
+
+def test_an_unasked_consent_store_allows_everything(consent_store):
+    """Running `python -m jarvis` by hand must not be silently crippled."""
+    consent_store.path.unlink(missing_ok=True)
+    consent_store.load()
+    assert consent_store.asked is False
+    assert consent_store.allows(Capability.POWER) is True
 
 
 def test_dry_run_never_executes():

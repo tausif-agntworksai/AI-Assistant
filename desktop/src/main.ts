@@ -3,6 +3,13 @@
  *
  * The window is deliberately frameless and always-on-top — an assistant you
  * summon with a hotkey shouldn't make you hunt for it in the taskbar.
+ *
+ * This process is also the security boundary. It holds the Firebase refresh
+ * token (the renderer never sees it), it holds the token that authenticates
+ * every call to the engine, and it is what tells the engine whether it may
+ * open the microphone at all. The order on every launch is:
+ *
+ *     boot the engine (locked) → permissions → sign in → unlock → listening
  */
 import path from "node:path";
 import {
@@ -14,20 +21,36 @@ import {
   Menu,
   nativeImage,
   screen,
+  session as electronSession,
   shell,
+  systemPreferences,
   Tray,
 } from "electron";
 import { Engine, missingPieces } from "./engine";
+import { sessionManager, type AuthStatus } from "./auth/session";
+import {
+  CAPABILITIES,
+  consentStore,
+  openOsSettings,
+  osAccess,
+  type Grants,
+} from "./consent";
+import { firebaseConfigured, requireAuth, twoFactorEnabled } from "./config";
 
 const HOTKEY = "Control+Alt+J";
 const WIDTH = 400;
 const HEIGHT = 560;
 const MARGIN = 24;
 
+/** The sign-in and permission screens need more room than the HUD. */
+const GATE_WIDTH = 460;
+const GATE_HEIGHT = 660;
+
 const engine = new Engine();
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let quitting = false;
+let engineReady = false;
 
 // A single instance owns the microphone and the port; a second would fight it
 // for both and fail in confusing ways.
@@ -37,9 +60,67 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", () => showWindow());
 }
 
+// Renderers get the OS sandbox. Nothing in this app's pages needs Node, and a
+// page bug should not be able to reach for it.
+app.enableSandbox();
+
 function iconPath(): string {
   return path.join(app.getAppPath(), "assets", "icon.png");
 }
+
+/* ── which screen the window should be on ───────────────────────────────── */
+
+type Screen = "auth" | "consent" | "hud";
+
+function requiredScreen(): Screen {
+  if (consentStore.needsAsking) return "consent";
+  if (requireAuth && !sessionManager.ready) return "auth";
+  return "hud";
+}
+
+let currentScreen: Screen | null = null;
+
+/**
+ * Navigations are serialised through here.
+ *
+ * Sign-in state arrives asynchronously and can settle twice in quick
+ * succession — restore() emits a change, then the caller re-checks — and two
+ * overlapping `loadFile` calls make Chromium abort the first one, which
+ * surfaces as an unhandled ERR_ABORTED rejection. Queuing them means the last
+ * decision wins and the superseded load is simply a no-op.
+ */
+let navigating: Promise<void> = Promise.resolve();
+
+function showScreen(target: Screen, force = false): Promise<void> {
+  if (!win || win.isDestroyed()) return Promise.resolve();
+  if (target === currentScreen && !force) return navigating;
+  currentScreen = target;
+
+  navigating = navigating.then(async () => {
+    if (!win || win.isDestroyed() || currentScreen !== target) return;
+    const page = { auth: "auth.html", consent: "consent.html", hud: "index.html" }[target];
+    const gate = target !== "hud";
+    win.setMinimumSize(gate ? 380 : 340, gate ? 520 : 420);
+    win.setSize(gate ? GATE_WIDTH : WIDTH, gate ? GATE_HEIGHT : HEIGHT);
+    try {
+      await win.loadFile(path.join(app.getAppPath(), "renderer", page));
+    } catch (err) {
+      // A load superseded by a newer one is the queue working, not a failure.
+      if (!String(err).includes("ERR_ABORTED")) throw err;
+      return;
+    }
+    // A screen that needs an answer has to be visible, even at login.
+    if (gate) win.show();
+  });
+  return navigating;
+}
+
+/** Re-evaluates the gate and moves the window if the answer changed. */
+async function syncScreen(): Promise<void> {
+  await showScreen(requiredScreen());
+}
+
+/* ── window ─────────────────────────────────────────────────────────────── */
 
 function createWindow(): BrowserWindow {
   const display = screen.getPrimaryDisplay().workArea;
@@ -64,17 +145,36 @@ function createWindow(): BrowserWindow {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // The preload uses only `ipcRenderer`, which is available in a sandboxed
+      // renderer — so the sandbox costs nothing and removes a whole class of
+      // escalation from a page bug.
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      webviewTag: false,
+      spellcheck: false,
     },
   });
-
-  window.loadFile(path.join(app.getAppPath(), "renderer", "index.html"));
 
   // `--hidden` is what the run-at-login entry passes: start listening in the
   // tray without taking focus at sign-in.
   const startHidden = process.argv.includes("--hidden");
   window.once("ready-to-show", () => {
-    if (!startHidden) window.show();
+    // A gate screen has to be seen — starting hidden with an un-answered
+    // permission prompt would leave the assistant permanently mute and
+    // silently so.
+    if (!startHidden || requiredScreen() !== "hud") window.show();
+  });
+
+  // The window is frameless and has no menu, so there is no way to open dev
+  // tools by hand — a broken sign-in screen would otherwise fail in complete
+  // silence. Errors from a page land in the same place as everything else.
+  window.webContents.on("console-message", (event) => {
+    if (event.level !== "error" && event.level !== "warning") return;
+    console.error(
+      `[renderer:${event.level}] ${event.message} ` +
+        `(${event.sourceId}:${event.lineNumber})`
+    );
   });
 
   // Closing hides to the tray; the assistant is meant to keep listening.
@@ -84,13 +184,29 @@ function createWindow(): BrowserWindow {
     window.hide();
   });
 
-  // Links open in the real browser, never inside the HUD.
+  // Links open in the real browser, never inside the HUD, and only ever http(s)
+  // — `openExternal` on an arbitrary scheme launches whatever is registered for
+  // it, which is a lot of trust to place in a string that came from a page.
   window.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (isWebUrl(url)) void shell.openExternal(url);
     return { action: "deny" };
+  });
+  window.webContents.on("will-navigate", (event, url) => {
+    if (url.startsWith("file://")) return;
+    event.preventDefault();
+    if (isWebUrl(url)) void shell.openExternal(url);
   });
 
   return window;
+}
+
+function isWebUrl(url: string): boolean {
+  try {
+    const scheme = new URL(url).protocol;
+    return scheme === "http:" || scheme === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function showWindow(): void {
@@ -103,6 +219,24 @@ function showWindow(): void {
 function send(channel: string, payload: unknown): void {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
 }
+
+/* ── permissions asked of Chromium ──────────────────────────────────────── */
+
+/**
+ * The HUD is a local page that needs nothing from this list, so the honest
+ * default is to refuse everything. Without a handler Electron approves some
+ * requests silently, which would make the permission screen a decoration.
+ */
+function lockDownPermissions(): void {
+  const ses = electronSession.defaultSession;
+  ses.setPermissionRequestHandler((_contents, permission, callback) => {
+    console.warn(`Refused a renderer permission request: ${permission}`);
+    callback(false);
+  });
+  ses.setPermissionCheckHandler(() => false);
+}
+
+/* ── tray ───────────────────────────────────────────────────────────────── */
 
 /** True when Windows launches the app at sign-in. */
 function launchesAtLogin(): boolean {
@@ -121,11 +255,26 @@ function setLaunchAtLogin(enabled: boolean): void {
 
 function buildTrayMenu(): void {
   if (!tray) return;
+  const status = sessionManager.status();
+  const account =
+    status.state === "unconfigured"
+      ? "Sign-in not configured"
+      : status.email
+        ? `Signed in as ${status.email}`
+        : "Not signed in";
+
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: "Show Jarvis", click: () => showWindow() },
-      { label: `Listen now (${HOTKEY})`, click: () => triggerListen() },
+      { label: account, enabled: false },
       { type: "separator" },
+      { label: "Show Jarvis", click: () => showWindow() },
+      {
+        label: `Listen now (${HOTKEY})`,
+        enabled: currentScreen === "hud",
+        click: () => void triggerListen(),
+      },
+      { type: "separator" },
+      { label: "Permissions…", click: () => void showScreen("consent", true) },
       {
         label: "Start with Windows",
         type: "checkbox",
@@ -136,6 +285,11 @@ function buildTrayMenu(): void {
       { label: "Open engine log", click: () => shell.openPath(engine.logPath) },
       { label: "Open data folder", click: () => shell.openPath(app.getPath("logs")) },
       { type: "separator" },
+      {
+        label: "Sign out",
+        enabled: Boolean(status.email),
+        click: () => void doSignOut(),
+      },
       {
         label: "Quit",
         click: () => {
@@ -155,12 +309,43 @@ function createTray(): void {
   tray.on("click", () => (win?.isVisible() ? win.hide() : showWindow()));
 }
 
+/* ── the engine ─────────────────────────────────────────────────────────── */
+
 async function triggerListen(): Promise<void> {
   try {
-    await fetch(`${engine.url}/listen`, { method: "POST" });
+    await engine.call("/listen", {});
     showWindow();
   } catch (err) {
     send("engine:error", `Could not reach the engine: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Pushes the current permission and sign-in state down to the engine.
+ *
+ * This is the join between the two processes: the engine enforces both, and
+ * until this runs it holds the microphone closed. Called after boot, after
+ * every permission change, and on every sign-in or sign-out.
+ */
+async function syncEngineState(): Promise<void> {
+  if (!engineReady) return;
+  try {
+    // Nothing is pushed until the user has actually answered the permission
+    // screen — the engine treats "no record" as command-line use and allows
+    // everything, and writing the defaults early would turn a screen the user
+    // is still reading into a decision they never made.
+    if (!consentStore.needsAsking) {
+      await engine.pushConsent(consentStore.all() as unknown as Record<string, boolean>);
+    }
+    const status = sessionManager.status();
+    const allowed = !requireAuth || status.state === "ready";
+    if (allowed) {
+      await engine.unlock(status.email, status.uid, sessionManager.unlockTtlSec || 3600);
+    } else {
+      await engine.lock();
+    }
+  } catch (err) {
+    send("engine:error", `Could not update the engine: ${(err as Error).message}`);
   }
 }
 
@@ -185,7 +370,9 @@ async function boot(): Promise<void> {
 
   try {
     await engine.start();
+    engineReady = true;
     send("engine:status", { state: "ready", url: engine.url, ws: engine.wsUrl });
+    await syncEngineState();
   } catch (err) {
     const message = (err as Error).message;
     send("engine:status", { state: "failed", message });
@@ -196,17 +383,63 @@ async function boot(): Promise<void> {
   }
 }
 
+/* ── sign-in ────────────────────────────────────────────────────────────── */
+
+async function afterAuthChange(status: AuthStatus): Promise<AuthStatus> {
+  await syncEngineState();
+  buildTrayMenu();
+  await syncScreen();
+  send("auth:status", status);
+  return status;
+}
+
+async function doSignOut(): Promise<AuthStatus> {
+  const status = await sessionManager.signOut();
+  return afterAuthChange(status);
+}
+
+/** Turns a thrown auth error into something a person can act on. */
+function authError(err: unknown): never {
+  const message = err instanceof Error ? err.message : "Something went wrong.";
+  throw new Error(message);
+}
+
+/**
+ * Renders the enrolment QR as inline SVG, here in the main process.
+ *
+ * Generated locally rather than through a QR-code web service, because the
+ * thing being encoded is the TOTP shared secret — handing it to a third party
+ * to draw would defeat the second factor it is meant to create. Optional: if
+ * the library isn't installed, the screen falls back to the setup key, which
+ * every authenticator app can take by hand.
+ */
+async function qrCode(text: string): Promise<string | null> {
+  try {
+    const { toString } = await import("qrcode");
+    return await toString(text, { type: "svg", margin: 1, width: 190 });
+  } catch {
+    return null;
+  }
+}
+
+/* ── lifecycle ──────────────────────────────────────────────────────────── */
+
 app.whenReady().then(async () => {
+  lockDownPermissions();
+  consentStore.load();
+
   win = createWindow();
   createTray();
 
-  if (!globalShortcut.register(HOTKEY, () => triggerListen())) {
+  if (!globalShortcut.register(HOTKEY, () => void triggerListen())) {
     send("engine:error", `Could not register the ${HOTKEY} hotkey — another app has it.`);
   }
 
+  // ── engine + window ───────────────────────────────────────────────────
   ipcMain.handle("engine:info", () => ({
     url: engine.url,
     ws: engine.wsUrl,
+    token: engine.apiToken,
     running: engine.running,
     hotkey: HOTKEY,
     logPath: engine.logPath,
@@ -224,6 +457,108 @@ app.whenReady().then(async () => {
     return Boolean(pinned);
   });
   ipcMain.handle("app:openLog", () => shell.openPath(engine.logPath));
+
+  // ── sign-in ───────────────────────────────────────────────────────────
+  ipcMain.handle("auth:config", () => ({
+    configured: firebaseConfigured,
+    required: requireAuth,
+    twoFactor: twoFactorEnabled,
+  }));
+  ipcMain.handle("auth:status", () => sessionManager.status());
+  ipcMain.handle("auth:signIn", async (_e, email: string, password: string) => {
+    try {
+      return await afterAuthChange(await sessionManager.signIn(email, password));
+    } catch (err) {
+      authError(err);
+    }
+  });
+  ipcMain.handle("auth:signUp", async (_e, email: string, password: string) => {
+    try {
+      return await afterAuthChange(await sessionManager.signUp(email, password));
+    } catch (err) {
+      authError(err);
+    }
+  });
+  ipcMain.handle("auth:submitCode", async (_e, code: string) => {
+    try {
+      return await afterAuthChange(await sessionManager.submitCode(code));
+    } catch (err) {
+      authError(err);
+    }
+  });
+  ipcMain.handle("auth:beginTotp", async () => {
+    try {
+      const enrollment = await sessionManager.beginTotpEnrollment();
+      return { ...enrollment, qrSvg: await qrCode(enrollment.uri) };
+    } catch (err) {
+      authError(err);
+    }
+  });
+  ipcMain.handle("auth:resendVerification", async () => {
+    try {
+      await sessionManager.resendVerification();
+    } catch (err) {
+      authError(err);
+    }
+  });
+  ipcMain.handle("auth:resetPassword", async (_e, email: string) => {
+    try {
+      await sessionManager.resetPassword(email);
+    } catch (err) {
+      authError(err);
+    }
+  });
+  ipcMain.handle("auth:recheck", async () =>
+    afterAuthChange(await sessionManager.recheck())
+  );
+  ipcMain.handle("auth:signOut", () => doSignOut());
+
+  // ── permissions ───────────────────────────────────────────────────────
+  ipcMain.handle("consent:list", () => ({
+    capabilities: CAPABILITIES.map((c) => ({
+      ...c,
+      os: c.osPermission ? osAccess(c.osPermission) : null,
+    })),
+    granted: consentStore.all(),
+    needsAsking: consentStore.needsAsking,
+  }));
+  ipcMain.handle("consent:save", async (_e, granted: Partial<Grants>) => {
+    const saved = consentStore.save(granted);
+    await syncEngineState();
+    await syncScreen();
+    buildTrayMenu();
+    return saved;
+  });
+  ipcMain.handle("consent:openOsSettings", (_e, kind: "microphone" | "camera") =>
+    openOsSettings(kind)
+  );
+  ipcMain.handle("consent:osStatus", (_e, kind: "microphone" | "camera") =>
+    osAccess(kind)
+  );
+
+  sessionManager.on("change", (status: AuthStatus) => {
+    send("auth:status", status);
+    buildTrayMenu();
+    void syncEngineState();
+    void syncScreen();
+  });
+
+  // The first screen is decided before anything is shown, so nobody ever sees
+  // the HUD flash past on the way to a sign-in prompt.
+  await sessionManager.restore();
+  await showScreen(requiredScreen(), true);
+  buildTrayMenu();
+
+  // Ask Windows about the microphone once, up front: if privacy settings block
+  // it, the stream opens and delivers silence forever, which reads to a user
+  // as "it just doesn't hear me".
+  if (systemPreferences.getMediaAccessStatus("microphone") === "denied") {
+    send(
+      "engine:error",
+      "Windows is blocking microphone access for apps. Open Settings → " +
+        "Privacy & security → Microphone to allow it."
+    );
+  }
 
   await boot();
 });

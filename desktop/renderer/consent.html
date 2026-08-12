@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;" />
+<title>What Jarvis may use</title>
+<style>
+  :root {
+    --bg: #0b0f17;
+    --panel: #121826;
+    --panel-2: #182031;
+    --line: #222d42;
+    --text: #e6ecf7;
+    --muted: #8494b0;
+    --accent: #35d6ff;
+    --accent-dim: #1b7f99;
+    --warn: #ffb340;
+    --danger: #ff5f6d;
+    --ok: #4ade80;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background:
+      radial-gradient(120% 60% at 50% -10%, #16324a 0%, transparent 55%),
+      var(--bg);
+    color: var(--text);
+    font: 13px/1.55 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    user-select: none;
+  }
+  body { display: flex; flex-direction: column; }
+
+  header {
+    -webkit-app-region: drag;
+    padding: 12px 16px 10px; flex: 0 0 auto; border-bottom: 1px solid var(--line);
+  }
+  .brand { font-weight: 600; letter-spacing: .14em; font-size: 10.5px; color: var(--muted); }
+  h1 { font-size: 16px; font-weight: 600; margin-top: 6px; }
+  .sub { color: var(--muted); font-size: 11.5px; margin-top: 4px; }
+  .sub-hi { display: block; margin-top: 2px; opacity: .82; }
+
+  main { flex: 1 1 auto; overflow-y: auto; padding: 10px 12px 4px; }
+  main::-webkit-scrollbar { width: 8px; }
+  main::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+
+  .item {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 8px;
+  }
+  .item.off { opacity: .68; }
+  .row { display: flex; align-items: flex-start; gap: 10px; }
+  .title { font-weight: 600; font-size: 12.5px; flex: 1; }
+  .title small {
+    display: block; font-weight: 400; color: var(--muted); font-size: 11px;
+    letter-spacing: .01em;
+  }
+  .what { color: var(--muted); font-size: 11.5px; margin-top: 6px; }
+  .what-hi { display: block; margin-top: 4px; opacity: .8; }
+  .eg {
+    margin-top: 6px; font-size: 11px; color: var(--muted);
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  .tag {
+    display: inline-block; font-size: 9.5px; letter-spacing: .08em;
+    text-transform: uppercase; padding: 1px 6px; border-radius: 4px;
+    background: var(--panel-2); color: var(--muted); margin-left: 6px;
+    vertical-align: 2px;
+  }
+  .tag.required { background: #17301f; color: var(--ok); }
+  .tag.unused { background: #33290f; color: var(--warn); }
+
+  /* switch */
+  .switch { flex: 0 0 auto; position: relative; width: 40px; height: 22px; }
+  .switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .switch span {
+    position: absolute; inset: 0; border-radius: 999px;
+    background: var(--panel-2); border: 1px solid var(--line); transition: background .16s;
+    pointer-events: none;
+  }
+  .switch span::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--muted); transition: transform .16s, background .16s;
+  }
+  .switch input:checked + span { background: rgba(53,214,255,.22); border-color: var(--accent-dim); }
+  .switch input:checked + span::after { transform: translateX(18px); background: var(--accent); }
+  .switch input:disabled { cursor: default; }
+  .switch input:disabled + span::after { background: var(--ok); }
+
+  .os-warning {
+    margin-top: 8px; border-radius: 7px; padding: 7px 9px; font-size: 11px;
+    background: rgba(255,179,64,.12); border: 1px solid #4a3a19; color: var(--warn);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .os-warning button {
+    margin-left: auto; background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--text); border-radius: 6px; padding: 4px 8px; cursor: pointer;
+    font: inherit; font-size: 11px; white-space: nowrap;
+  }
+
+  footer {
+    flex: 0 0 auto; border-top: 1px solid var(--line); padding: 10px 14px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .buttons { display: flex; gap: 8px; }
+  button.primary {
+    flex: 1; background: var(--accent-dim); border: 0; color: #041018; font-weight: 600;
+    border-radius: 8px; padding: 10px; cursor: pointer; font: inherit; font-size: 12.5px;
+  }
+  button.primary:hover { background: var(--accent); }
+  button.secondary {
+    background: var(--panel); border: 1px solid var(--line); color: var(--text);
+    border-radius: 8px; padding: 10px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
+  }
+  button.secondary:hover { background: var(--panel-2); }
+  .fine { font-size: 10.5px; color: var(--muted); text-align: center; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">JARVIS</div>
+  <h1 id="heading">What may Jarvis use?</h1>
+  <p class="sub">
+    Everything below is off until you say otherwise, and every one of them can
+    be changed later from the tray icon.
+    <span class="sub-hi">नीचे दी गई हर चीज़ आप बाद में ट्रे आइकॉन से बदल सकते हैं।</span>
+  </p>
+</header>
+
+<main id="list"></main>
+
+<footer>
+  <div class="buttons">
+    <button class="secondary" id="minimal">Only the essentials</button>
+    <button class="primary" id="save">Continue</button>
+  </div>
+  <p class="fine">
+    Jarvis runs on this machine. Speech is recognised locally; only commands the
+    offline rules don't understand are sent to Claude.
+  </p>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const listNode = $("list");
+  let capabilities = [];
+  let granted = {};
+  let firstRun = true;
+
+  const el = (tag, props = {}, children = []) => {
+    const node = Object.assign(document.createElement(tag), props);
+    for (const child of [].concat(children)) {
+      if (child) node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    }
+    return node;
+  };
+
+  function osWarning(spec) {
+    // Windows has its own switch for the microphone and the camera. Consent
+    // here means nothing if that one is off — and the failure is silent: the
+    // stream opens and delivers digital silence forever.
+    if (!spec.osPermission || spec.os === "granted" || spec.os === "unknown" || spec.os === null) {
+      return null;
+    }
+    const open = el("button", { textContent: "Open Windows settings" });
+    open.onclick = () => window.consent.openOsSettings(spec.osPermission);
+    return el("div", { className: "os-warning" }, [
+      el("span", {
+        textContent:
+          spec.os === "denied"
+            ? `Windows is currently blocking ${spec.osPermission} access for apps.`
+            : `Windows hasn't been asked for ${spec.osPermission} access yet.`,
+      }),
+      open,
+    ]);
+  }
+
+  function card(spec) {
+    const box = el("div", { className: granted[spec.id] ? "item" : "item off" });
+
+    const title = el("div", { className: "title" }, [spec.title]);
+    if (spec.required) title.appendChild(el("span", { className: "tag required", textContent: "required" }));
+    if (spec.unused) title.appendChild(el("span", { className: "tag unused", textContent: "unused" }));
+    title.appendChild(el("small", { textContent: spec.titleHi }));
+
+    const input = el("input", {
+      type: "checkbox",
+      checked: Boolean(granted[spec.id]),
+      disabled: Boolean(spec.required),
+      title: spec.required ? "Jarvis can't work without this" : "",
+    });
+    input.onchange = () => {
+      granted[spec.id] = input.checked;
+      box.className = input.checked ? "item" : "item off";
+    };
+
+    const parts = [
+      el("div", { className: "row" }, [title, el("label", { className: "switch" }, [input, el("span")])]),
+      el("div", { className: "what" }, [
+        spec.what,
+        el("span", { className: "what-hi", textContent: spec.whatHi }),
+      ]),
+    ];
+    if (spec.examples && spec.examples !== "—") {
+      parts.push(el("div", { className: "eg", textContent: spec.examples }));
+    }
+    const warning = osWarning(spec);
+    if (warning) parts.push(warning);
+
+    box.replaceChildren(...parts);
+    return box;
+  }
+
+  function draw() {
+    listNode.replaceChildren(...capabilities.map(card));
+    $("heading").textContent = firstRun ? "What may Jarvis use?" : "Permissions";
+    $("save").textContent = firstRun ? "Continue" : "Save";
+  }
+
+  $("minimal").onclick = () => {
+    // The smallest set that still leaves a working assistant: hear, answer,
+    // and open apps. Everything else off.
+    const essentials = new Set(["microphone", "speaker", "app_control"]);
+    for (const spec of capabilities) {
+      granted[spec.id] = spec.required || essentials.has(spec.id);
+    }
+    draw();
+  };
+
+  $("save").onclick = async () => {
+    $("save").disabled = true;
+    await window.consent.save(granted);
+    // The main process decides what comes next — the sign-in screen on a first
+    // run, the HUD after that — so this page doesn't navigate itself.
+  };
+
+  (async () => {
+    const data = await window.consent.list();
+    capabilities = data.capabilities;
+    granted = data.granted;
+    firstRun = data.needsAsking;
+    draw();
+  })();
+})();
+</script>
+</body>
+</html>

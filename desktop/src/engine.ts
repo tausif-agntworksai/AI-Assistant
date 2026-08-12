@@ -7,6 +7,7 @@
  * disturbing anything the engine is doing.
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createWriteStream, existsSync, mkdirSync, type WriteStream } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
@@ -98,6 +99,18 @@ async function pickPort(): Promise<number> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Shapes of the credentials that can turn up in engine output. The log file is
+ * what people attach to bug reports, and a provider that rejects a key likes to
+ * quote it back.
+ */
+const SECRET_PATTERNS: RegExp[] = [
+  /\bsk-ant-[A-Za-z0-9_-]{12,}/g,
+  /\bsk-[A-Za-z0-9_-]{16,}/g,
+  /\bAIza[A-Za-z0-9_-]{20,}/g,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+];
+
 export class Engine {
   private child: ChildProcess | null = null;
   private log: WriteStream | null = null;
@@ -107,6 +120,16 @@ export class Engine {
 
   readonly paths = resolvePaths();
   port = PREFERRED_PORT;
+
+  /**
+   * Minted per launch and handed to the engine through its environment.
+   *
+   * The engine's API can shut the machine down, and it listens on a fixed
+   * loopback port that every browser on this machine can also reach — a page
+   * on any website can issue `fetch("http://127.0.0.1:8756/command")`. It
+   * cannot, however, read this string. That is what makes the port safe.
+   */
+  readonly apiToken = randomBytes(32).toString("base64url");
 
   /** Called with each line the engine prints, for the HUD's log view. */
   onOutput: ((line: string) => void) | null = null;
@@ -146,6 +169,11 @@ export class Engine {
       env: {
         ...process.env,
         JARVIS_PORT: String(this.port),
+        JARVIS_API_TOKEN: this.apiToken,
+        // Launched by the app, so the engine holds its microphone shut until a
+        // signed-in session unlocks it. A bare `python -m jarvis` sets nothing
+        // and keeps working as before.
+        JARVIS_REQUIRE_SESSION: "1",
         // Devanagari transcripts crash a cp1252 stdout, which would take the
         // engine down mid-utterance.
         PYTHONIOENCODING: "utf-8",
@@ -195,13 +223,57 @@ export class Engine {
     this.log = null;
   }
 
+  /* ── the authenticated API ────────────────────────────────────────────── */
+
+  /** Every call the app makes to the engine goes through here, with the token. */
+  async call<T>(route: string, body?: unknown): Promise<T> {
+    const response = await fetch(`${this.url}${route}`, {
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiToken}`,
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    if (!response.ok) {
+      throw new Error(`${route} failed (${response.status})`);
+    }
+    return (await response.json()) as T;
+  }
+
+  /**
+   * Tells the engine a verified person is present, and for how long. The TTL
+   * matches the Firebase ID token that vouched for them, so an account revoked
+   * upstream stops the microphone within one refresh cycle rather than at the
+   * next restart.
+   */
+  async unlock(account: string, uid: string, ttlSec: number): Promise<void> {
+    await this.call("/session/unlock", { account, uid, ttl_sec: ttlSec });
+  }
+
+  async lock(): Promise<void> {
+    await this.call("/session/lock", {});
+  }
+
+  /** Mirrors the permission screen's decision into the engine that enforces it. */
+  async pushConsent(granted: Record<string, boolean>): Promise<void> {
+    await this.call("/consent", { granted });
+  }
+
   private write(text: string): void {
-    this.log?.write(text);
-    this.recent.push(text);
+    // The token isn't key-shaped, so scrub it by value as well.
+    const safe = redactSecrets(text).split(this.apiToken).join("[redacted]");
+    this.log?.write(safe);
+    this.recent.push(safe);
     if (this.recent.length > 60) this.recent.shift();
-    if (!app.isPackaged) process.stdout.write(text);
-    for (const line of text.split(/\r?\n/)) {
+    if (!app.isPackaged) process.stdout.write(safe);
+    for (const line of safe.split(/\r?\n/)) {
       if (line.trim()) this.onOutput?.(line);
     }
   }
+}
+
+/** Replaces anything credential-shaped with a marker. Safe on any string. */
+export function redactSecrets(text: string): string {
+  return SECRET_PATTERNS.reduce((out, pattern) => out.replace(pattern, "[redacted]"), text);
 }

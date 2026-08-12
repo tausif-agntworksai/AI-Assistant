@@ -1,0 +1,85 @@
+WHAT JARVIS WILL USE ON THIS COMPUTER
+=====================================
+
+Jarvis is a voice assistant that runs on this machine. Before it does anything,
+it asks you — once, on first launch — which of the following it may use. Every
+one of them can be switched off then or changed later from the tray icon, and
+the ones you switch off are refused by the engine itself, not merely hidden.
+
+This page lists them so you know what you are installing before you install it.
+
+
+THE MICROPHONE, AND WHAT HAPPENS TO WHAT YOU SAY
+------------------------------------------------
+
+Jarvis listens for the wake word "hey jarvis". Until that wake word fires,
+audio stays in a small rolling buffer in memory on this computer and is scored
+by a local model. Nothing is transcribed, nothing is written to disk, and
+nothing is sent anywhere.
+
+After the wake word, speech is transcribed by a speech model that also runs on
+this computer. Commands the built-in rules recognise ("chrome kholo", "volume
+50") never leave the machine at all. Only phrasings the rules do not recognise
+are sent to Anthropic's Claude API to be understood, along with the time, the
+title of the focused window and the battery level. Weather, news and the
+neural voices also use the internet. All of this is the "Internet" permission,
+and it can be switched off.
+
+
+WHAT IT CAN DO TO THE COMPUTER
+------------------------------
+
+  Speakers              Answers out loud, in Hindi or English.
+  Internet              Claude, weather, news, and the neural voices.
+  Apps                  Opens, closes and switches between installed apps.
+  Windows               Minimises, maximises, snaps and closes windows.
+  Device readings       Battery, CPU, memory, disk and network state.
+  Windows settings      Brightness, night light, and Settings pages.
+  System commands       Runs PowerShell in the background, with no visible
+                        window. Windows exposes brightness, wi-fi and the
+                        Store-app list no other way.
+  Your files            Opens your personal folders and searches them by name.
+  Screenshots           Captures the screen to your Pictures folder.
+  Clipboard             Reads what you have copied, and writes to it.  (off by default)
+  Typing for you        Types into whatever window is focused.          (off by default)
+  Power controls        Lock, sleep, sign out, restart, shut down.
+  Messaging             Opens WhatsApp or email with a message prepared. Jarvis
+                        never presses send.                              (off by default)
+  Camera                Not used by anything today. Listed so that if a camera
+                        feature is ever added it arrives switched off.   (off by default)
+
+
+ANYTHING CONSEQUENTIAL ASKS FIRST
+---------------------------------
+
+Separately from the permissions above, every action is classified by how much
+damage it could do if Jarvis misheard you:
+
+  Opening an app, changing the volume, answering a question   runs immediately
+  Sleep, lock, closing an app or window, typing               asks out loud
+  Shutdown, restart, sign out, emptying the Recycle Bin,      always asks
+  sending a message
+
+Anything that is not a clear "yes" counts as a no. Shutdown and restart run on
+a 15-second delay, so "cancel shutdown" stops one. Messaging never sends by
+itself: it opens the chat with the message typed and waits for you.
+
+Every action Jarvis takes — allowed, refused or failed — is written to an audit
+log you can read in the app's Activity tab.
+
+
+SIGNING IN
+----------
+
+If this build is configured with a Firebase project, Jarvis will not open the
+microphone at all until you sign in with a verified email address that an
+administrator has approved. The account is stored encrypted with your Windows
+account's own key, and can be signed out from the tray icon at any time.
+
+
+UNINSTALLING
+------------
+
+Everything Jarvis writes lives in one folder: %LOCALAPPDATA%\Jarvis. Deleting
+it removes the speech models, the logs, your reminders and notes, and the
+permission record.

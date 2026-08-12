@@ -138,6 +138,64 @@ def test_segmenter_completes_when_the_vad_reports_speech():
     assert seg.audio.size > 0
 
 
+def test_a_pause_mid_command_does_not_end_the_turn():
+    """"chrome… kholo" must arrive whole.
+
+    Half a command routes to nothing, and the user's experience of that is
+    having to say the whole thing again — which is the complaint this adaptive
+    window exists to answer. Barely any speech yet means the pause is probably
+    a thought, not a full stop.
+    """
+    frame_ms = 1000.0 * SILERO_FRAME / 16000
+    said_chrome = int(300 / frame_ms)
+    pause = int(800 / frame_ms)          # longer than silence_ms, shorter than patience
+    said_kholo = int(400 / frame_ms)
+
+    vad = _ScriptedVad(
+        [0.9] * said_chrome + [0.0] * pause + [0.9] * said_kholo + [0.0] * 60
+    )
+    seg = SpeechSegmenter(vad, sample_rate=16000, threshold=0.5, silence_ms=650,
+                          patience_silence_ms=1300, min_speech_ms=200,
+                          max_utterance_sec=15)
+    seg.reset()
+
+    frame = np.full(SILERO_FRAME, 0.1, dtype=np.float32)
+    results = []
+    for _ in range(said_chrome + pause + said_kholo + 60):
+        result = seg.push(frame)
+        results.append(result)
+        if result not in (SegmentResult.WAITING, SegmentResult.SPEAKING):
+            break
+
+    # It did not end during the pause…
+    assert results[said_chrome + pause - 1] is SegmentResult.SPEAKING
+    # …and the finished utterance contains both halves.
+    assert results[-1] is SegmentResult.COMPLETE
+    assert seg.speech_ms >= 600
+
+
+def test_a_settled_utterance_still_ends_promptly():
+    """The patience window must not make every command feel laggy."""
+    frame_ms = 1000.0 * SILERO_FRAME / 16000
+    speech_frames = int(1200 / frame_ms)
+    silence_frames = int(700 / frame_ms)
+    vad = _ScriptedVad([0.9] * speech_frames + [0.0] * silence_frames)
+
+    seg = SpeechSegmenter(vad, sample_rate=16000, threshold=0.5, silence_ms=650,
+                          patience_silence_ms=1300, min_speech_ms=200,
+                          max_utterance_sec=15)
+    seg.reset()
+
+    frame = np.full(SILERO_FRAME, 0.1, dtype=np.float32)
+    result = None
+    for _ in range(speech_frames + silence_frames):
+        result = seg.push(frame)
+        if result not in (SegmentResult.WAITING, SegmentResult.SPEAKING):
+            break
+
+    assert result is SegmentResult.COMPLETE
+
+
 def test_segmenter_reports_silence_when_the_vad_never_fires():
     """A VAD stuck at zero must surface as SILENT, which is what we saw."""
     vad = _ScriptedVad([0.0])

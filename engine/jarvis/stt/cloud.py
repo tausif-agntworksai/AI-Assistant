@@ -50,7 +50,14 @@ class CloudTranscriber(Transcriber):
         if not api_key:
             raise ValueError("CLOUD_STT_API_KEY is not set")
 
-    def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> Transcript:
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 16000,
+        *,
+        short_answer: bool = False,
+        hint: str | None = None,
+    ) -> Transcript:
         audio = np.asarray(audio, dtype=np.float32).ravel()
         duration = audio.shape[0] / sample_rate
         if duration < 0.2:
@@ -67,7 +74,9 @@ class CloudTranscriber(Transcriber):
             return Transcript(text="", audio_duration=duration, backend=self.name,
                               latency=time.perf_counter() - t0)
 
-        if is_repetition_loop(text) or is_probable_hallucination(text):
+        if is_repetition_loop(text) or is_probable_hallucination(
+            text, short_answer=short_answer
+        ):
             text = ""
 
         result = Transcript(
@@ -141,14 +150,46 @@ class FallbackTranscriber(Transcriber):
     def warmup(self) -> None:
         self.local.warmup()
 
-    def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> Transcript:
-        result = self.local.transcribe(audio, sample_rate)
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 16000,
+        *,
+        short_answer: bool = False,
+        hint: str | None = None,
+    ) -> Transcript:
+        result = self.local.transcribe(
+            audio, sample_rate, short_answer=short_answer, hint=hint
+        )
         if result.is_empty and audio.shape[0] / sample_rate >= 0.5:
             log.info("Local recognition came back empty — retrying in the cloud")
-            cloud_result = self.cloud.transcribe(audio, sample_rate)
+            cloud_result = self.cloud.transcribe(
+                audio, sample_rate, short_answer=short_answer, hint=hint
+            )
             if not cloud_result.is_empty:
                 return cloud_result
         return result
+
+    def escalate(
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 16000,
+        *,
+        previous: Transcript | None = None,
+        short_answer: bool = False,
+        hint: str | None = None,
+    ) -> Transcript:
+        """Forced re-decode: the local tier's second pass, then the cloud."""
+        local_escalate = getattr(self.local, "escalate", None)
+        if callable(local_escalate):
+            better = local_escalate(audio, sample_rate, previous=previous,
+                                    short_answer=short_answer, hint=hint)
+            if not better.is_empty:
+                return better
+        cloud_result = self.cloud.transcribe(
+            audio, sample_rate, short_answer=short_answer, hint=hint
+        )
+        return cloud_result if not cloud_result.is_empty else (previous or cloud_result)
 
     def close(self) -> None:
         self.local.close()

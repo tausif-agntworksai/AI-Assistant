@@ -173,6 +173,15 @@ class SpeechSegmenter:
     """Turns a frame stream into one utterance, ended by trailing silence.
 
     Push frames until the result is terminal, then read `.audio`.
+
+    Endpointing is adaptive, because a fixed silence window is wrong in both
+    directions. Cut too early and "chrome… kholo" is transcribed as "chrome",
+    which routes nowhere and makes the user repeat themselves. Wait too long
+    and every command feels laggy. So the window starts short and is extended
+    only in the case where an early cut is likely: when barely any speech has
+    happened yet, which is what a false start or a mid-thought pause looks
+    like. Once a full command's worth of speech is in the buffer, the short
+    window applies and the reply comes back promptly.
     """
 
     def __init__(
@@ -184,16 +193,30 @@ class SpeechSegmenter:
         min_speech_ms: int = 250,
         max_utterance_sec: int = 15,
         no_speech_timeout_sec: float = 6.0,
+        patience_silence_ms: int | None = None,
+        settled_speech_ms: int = 500,
     ) -> None:
         self.vad = vad
         self.sample_rate = sample_rate
         self.threshold = threshold
         self.frame_ms = 1000.0 * vad.frame_size / sample_rate
         self.silence_frames = max(1, int(silence_ms / self.frame_ms))
+        # Default: roughly double the base window, which covers the natural
+        # pause people leave between a noun and the verb that follows it.
+        patience = patience_silence_ms if patience_silence_ms is not None else silence_ms * 2
+        self.patience_frames = max(self.silence_frames, int(patience / self.frame_ms))
+        self.settled_frames = max(1, int(settled_speech_ms / self.frame_ms))
         self.min_speech_frames = max(1, int(min_speech_ms / self.frame_ms))
         self.max_frames = int(max_utterance_sec * 1000 / self.frame_ms)
         self.no_speech_frames = int(no_speech_timeout_sec * 1000 / self.frame_ms)
         self.reset()
+
+    @property
+    def required_silence(self) -> int:
+        """Frames of silence needed to call the utterance finished."""
+        if self._speech_frames >= self.settled_frames:
+            return self.silence_frames
+        return self.patience_frames
 
     def reset(self, preroll: np.ndarray | None = None) -> None:
         self.vad.reset()
@@ -229,7 +252,7 @@ class SpeechSegmenter:
         if self._total_frames >= self.max_frames:
             return SegmentResult.TIMEOUT
 
-        if self._silence_run >= self.silence_frames:
+        if self._silence_run >= self.required_silence:
             if self._speech_frames < self.min_speech_frames:
                 return SegmentResult.TOO_SHORT
             return SegmentResult.COMPLETE
@@ -245,3 +268,8 @@ class SpeechSegmenter:
     @property
     def duration_sec(self) -> float:
         return sum(c.shape[0] for c in self._chunks) / self.sample_rate
+
+    @property
+    def speech_ms(self) -> float:
+        """How much of the buffer the detector scored as speech."""
+        return self._speech_frames * self.frame_ms

@@ -11,9 +11,13 @@
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
     "icon": "electron scripts/make-icon.mjs",
+    "env": "node scripts/make-app-env.mjs",
     "build:engine": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-engine.ps1",
     "shortcut": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/make-shortcut.ps1",
-    "dist": "npm run build && npm run icon && npm run build:engine && electron-builder --win"
+    "dist": "npm run build && npm run icon && npm run env && npm run build:engine && electron-builder --win"
+  },
+  "optionalDependencies": {
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
@@ -38,6 +42,10 @@
       {
         "from": "../engine/dist/jarvis-engine",
         "to": "engine"
+      },
+      {
+        "from": "build/app.env",
+        "to": "app.env"
       }
     ],
     "win": {
@@ -55,7 +63,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Jarvis"
+      "shortcutName": "Jarvis",
+      "license": "build/permissions.txt"
     }
   }
 }

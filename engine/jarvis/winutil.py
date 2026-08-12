@@ -33,7 +33,21 @@ def run(
     timeout: float = 20.0,
     check: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a command with no visible window."""
+    """Run a command with no visible window.
+
+    This is the single place the assistant reaches the command line, which is
+    what makes "may it run system commands?" a question the user can be asked
+    once and have enforced everywhere. Brightness, wi-fi, battery details,
+    window snapping and the Store-app index all arrive through here.
+    """
+    from .permissions import Capability, PermissionDenied, consent
+
+    if not consent.allows(Capability.SHELL):
+        raise PermissionDenied(
+            args[0] if args else "command",
+            "running system commands is turned off",
+        )
+
     return subprocess.run(
         args,
         capture_output=True,
@@ -49,6 +63,8 @@ def run(
 
 def powershell(script: str, timeout: float = 20.0) -> str:
     """Run a PowerShell snippet and return stdout ('' on failure)."""
+    from .permissions import PermissionDenied
+
     try:
         proc = run(
             ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
@@ -57,6 +73,12 @@ def powershell(script: str, timeout: float = 20.0) -> str:
         )
     except subprocess.TimeoutExpired:
         log.warning("PowerShell timed out: %s", script[:80])
+        return ""
+    except PermissionDenied:
+        # Callers here are read-only lookups (the app index, a battery detail).
+        # Degrading to "I don't know" is the right answer when the user has
+        # turned command-line access off; failing the whole skill is not.
+        log.debug("PowerShell skipped — shell permission not granted")
         return ""
     if proc.returncode != 0:
         log.debug("PowerShell exit %d: %s", proc.returncode, (proc.stderr or "").strip()[:200])

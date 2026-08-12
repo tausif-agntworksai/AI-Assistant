@@ -19,7 +19,14 @@ import typing
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, get_args, get_origin
 
-from ..permissions import PermissionDenied, Risk, audit, gate
+from ..permissions import (
+    Capability,
+    PermissionDenied,
+    Risk,
+    audit,
+    capability_for,
+    gate,
+)
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +81,9 @@ class SkillContext:
     transcript: str = ""
     source: str = "voice"  # voice | text | hud
     dry_run: bool = False
+    #: Email of the signed-in account, recorded in the audit log so a shared
+    #: machine's history says who asked for what.
+    account: str = ""
 
 
 # --- specification ---------------------------------------------------------
@@ -102,6 +112,7 @@ class SkillSpec:
             p.annotation is SkillContext or name == "ctx"
             for name, p in self.signature.parameters.items()
         )
+        self.capability = capability_for(self.name, self.category)
 
     def confirm_prompts(self, args: dict[str, Any]) -> tuple[str, str]:
         """Build the confirmation question, interpolating the arguments."""
@@ -225,23 +236,30 @@ class SkillRegistry:
 
         if spec is None:
             audit(name, allowed=False, ok=False, detail="unknown skill",
-                  source=ctx.source, transcript=ctx.transcript)
+                  source=ctx.source, transcript=ctx.transcript, account=ctx.account)
             return fail(f"I don't know how to {name.replace('_', ' ')}.",
                         f"Mujhe {name.replace('_', ' ')} karna nahi aata.")
 
         args = self._coerce_args(spec, args)
 
+        # Consent before confirmation: a capability the user switched off is
+        # not something to ask about, it's something we can't do.
+        if not gate.check_consent(spec.capability):
+            return self._refuse_capability(spec, args, ctx)
+
         if ctx.dry_run:
             detail = f"{spec.name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
             log.info("DRY RUN: %s [risk=%s]", detail, spec.risk.value)
             audit(spec.name, risk=spec.risk.value, args=args, allowed=True, ok=True,
-                  detail="dry-run: " + detail, source=ctx.source, transcript=ctx.transcript)
+                  detail="dry-run: " + detail, source=ctx.source,
+                  transcript=ctx.transcript, account=ctx.account)
             return ok(f"Dry run: would {detail}", detail=detail)
 
         prompt_en, prompt_hi = spec.confirm_prompts(args)
         if not gate.check(spec.name, spec.risk, prompt_en, prompt_hi, ctx.language):
             audit(spec.name, risk=spec.risk.value, args=args, allowed=False, ok=False,
-                  detail="denied at confirmation", source=ctx.source, transcript=ctx.transcript)
+                  detail="denied at confirmation", source=ctx.source,
+                  transcript=ctx.transcript, account=ctx.account)
             return fail("Cancelled.", "Theek hai, rehne dete hain.")
 
         if spec.wants_context:
@@ -251,19 +269,21 @@ class SkillRegistry:
             result = spec.func(**args)
         except PermissionDenied as exc:
             audit(spec.name, risk=spec.risk.value, args=args, allowed=False, ok=False,
-                  detail=str(exc), source=ctx.source, transcript=ctx.transcript)
+                  detail=str(exc), source=ctx.source, transcript=ctx.transcript,
+                  account=ctx.account)
             return fail("I'm not allowed to do that.", "Mujhe iski ijazat nahi hai.")
         except TypeError as exc:
             log.error("Bad arguments for %s: %s", spec.name, exc)
             audit(spec.name, risk=spec.risk.value, args=args, allowed=True, ok=False,
-                  detail=f"TypeError: {exc}", source=ctx.source, transcript=ctx.transcript)
+                  detail=f"TypeError: {exc}", source=ctx.source,
+                  transcript=ctx.transcript, account=ctx.account)
             return fail("I didn't catch what to apply that to.",
                         "Samajh nahi aaya kis cheez pe karna hai.")
         except Exception as exc:  # noqa: BLE001 - one bad skill must not kill the engine
             log.exception("Skill %s failed", spec.name)
             audit(spec.name, risk=spec.risk.value, args=args, allowed=True, ok=False,
                   detail=f"{type(exc).__name__}: {exc}", source=ctx.source,
-                  transcript=ctx.transcript)
+                  transcript=ctx.transcript, account=ctx.account)
             return fail("That didn't work.", "Ye kaam nahi ho paya.")
 
         if not isinstance(result, SkillResult):
@@ -271,8 +291,26 @@ class SkillRegistry:
 
         audit(spec.name, risk=spec.risk.value, args={k: v for k, v in args.items() if k != "ctx"},
               allowed=True, ok=result.ok, detail=result.detail or result.reply.en,
-              source=ctx.source, transcript=ctx.transcript)
+              source=ctx.source, transcript=ctx.transcript, account=ctx.account)
         return result
+
+    @staticmethod
+    def _refuse_capability(
+        spec: SkillSpec, args: dict[str, Any], ctx: SkillContext
+    ) -> SkillResult:
+        """Explain which permission is missing, and where to turn it back on."""
+        capability: Capability = spec.capability  # type: ignore[assignment]
+        log.info("Blocked %s — %s consent not granted", spec.name, capability.value)
+        audit(spec.name, risk=spec.risk.value, args=args, allowed=False, ok=False,
+              detail=f"capability not granted: {capability.value}",
+              source=ctx.source, transcript=ctx.transcript, account=ctx.account)
+        return fail(
+            f"I don't have permission to use {capability.label}. "
+            f"You can turn it on under Permissions.",
+            f"मुझे {capability.label_hi} की इजाज़त नहीं है। "
+            f"Permissions में जाकर इसे चालू कर सकते हैं।",
+            detail=f"capability:{capability.value}",
+        )
 
     @staticmethod
     def _coerce_args(spec: SkillSpec, args: dict[str, Any]) -> dict[str, Any]:

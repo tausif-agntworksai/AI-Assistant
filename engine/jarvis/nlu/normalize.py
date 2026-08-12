@@ -123,7 +123,42 @@ _SPELLING_FIXES = {
     "sistam": "system", "baitari": "battery", "minat": "minute",
     "aelarm": "alarm", "alarm": "alarm", "meil": "email", "imel": "email",
     "instagram": "instagram", "netflix": "netflix",
+
+    # Mishearings observed from the fast Whisper model on this microphone.
+    # Every entry here is one command the user would otherwise have had to
+    # repeat, so this table is worth growing whenever a miss is noticed.
+    "crome": "chrome", "chrom": "chrome", "krome": "chrome", "chroma": "chrome",
+    "youtub": "youtube", "utube": "youtube", "yutube": "youtube",
+    "watsapp": "whatsapp", "whatsap": "whatsapp", "watsap": "whatsapp",
+    "spotifai": "spotify", "spotifi": "spotify",
+    "settingz": "settings", "seting": "settings", "setings": "settings",
+    "skreenshot": "screenshot", "screenshort": "screenshot",
+    "wolume": "volume", "volum": "volume", "walyum": "volume",
+    "brightnes": "brightness", "brighness": "brightness",
+    "kolo": "kholo", "kolho": "kholo", "cholo": "kholo",
+    "bandh": "band", "bund": "band",
+    "karado": "kardo", "kardo": "kardo",
+    "batao": "batao", "bathao": "batao", "batado": "batao",
 }
+
+# Fixes that span a word boundary, applied before the per-word table. Whisper
+# splits compound product names as often as it joins them.
+_PHRASE_FIXES = (
+    (re.compile(r"\byou\s+tube\b"), "youtube"),
+    (re.compile(r"\bwhats\s+app\b"), "whatsapp"),
+    (re.compile(r"\bv\s*s\s+code\b"), "vscode"),
+    (re.compile(r"\bvisual\s+studio\s+code\b"), "vscode"),
+    (re.compile(r"\bfile\s+explorer\b"), "explorer"),
+    (re.compile(r"\bcontrol\s+panel\b"), "controlpanel"),
+    (re.compile(r"\bscreen\s+shot\b"), "screenshot"),
+    (re.compile(r"\bnight\s+lite\b"), "night light"),
+    (re.compile(r"\bwi\s*fi\b"), "wifi"),
+    (re.compile(r"\bblue\s+tooth\b"), "bluetooth"),
+    (re.compile(r"\bshut\s+down\b"), "shutdown"),
+    (re.compile(r"\bre\s+start\b"), "restart"),
+    (re.compile(r"\bkhol\s+do\b"), "kholo"),
+    (re.compile(r"\bband\s+kar\s+do\b"), "band karo"),
+)
 
 
 def normalize(text: str) -> str:
@@ -138,6 +173,8 @@ def normalize(text: str) -> str:
     text = _APOSTROPHES.sub("", text)
     text = _PUNCT.sub(" ", text)
     text = _WS.sub(" ", text).strip()
+    for pattern, replacement in _PHRASE_FIXES:
+        text = pattern.sub(replacement, text)
     text = " ".join(_SPELLING_FIXES.get(w, w) for w in text.split())
     return _strip_filler(text)
 
@@ -301,6 +338,78 @@ def looks_hindi(text: str) -> bool:
     if set(words) & _HINDI_MARKERS:
         return True
     return any(len(w) >= 5 and w.startswith(_HINDI_STEMS) for w in words)
+
+
+# Words that only appear in English sentences. Deliberately excludes anything
+# that doubles as a romanised Hindi word: "the" is Hindi for "were", "band" is
+# "closed", "do" is "two", "so" is "hundred", "me" is "in".
+_ENGLISH_MARKERS = frozenset("""
+what which who whose why how when where whats hows
+is are was were am been being have has had does did
+can could would should will shall must might may
+please tell show open close turn set make give find search play stop start
+about after again all also always another any because before between both
+computer laptop screen volume brightness battery music song file folder window
+my your our their his her its this that these those there here
+and but for from into with without over under again just only very
+""".split())
+
+# Whisper regularly labels short romanised Hindi as one of these. They all mean
+# the same thing for our purposes: the person was not speaking English.
+_HINDI_ADJACENT = frozenset({"hi", "ur", "mr", "ne", "sa", "bn", "pa", "gu"})
+
+
+def detect_language(
+    text: str,
+    whisper_language: str | None = None,
+    whisper_probability: float = 0.0,
+    previous: str = "en",
+) -> str:
+    """Decide which language to answer in. Returns "hi" or "en".
+
+    Whisper's label is one input, not the answer. On a two-word romanised
+    command it is close to a coin flip — the model has almost no acoustic
+    context to work with and no script to read — so the text itself is
+    consulted first and the label is only trusted when it is both confident
+    and about a language we care about.
+
+    The order below is the whole policy:
+
+      1. Devanagari on screen — settled, nothing else can outweigh it.
+      2. Distinctive romanised Hindi ("kholo", "kitna", "karo") — Hinglish,
+         which is what most commands actually are.
+      3. A confident Whisper label of Hindi, or of a language people's Hindi
+         gets mistaken for (Urdu, Marathi, Nepali…).
+      4. Distinctive English words, with no Hindi markers present.
+      5. A confident Whisper label of English.
+      6. Whatever language the conversation was already in — a follow-up
+         ("aur battery?") inherits rather than resetting to English.
+    """
+    label = (whisper_language or "").lower()[:2]
+    previous = "hi" if (previous or "en").lower().startswith("hi") else "en"
+
+    if has_devanagari(text):
+        return "hi"
+
+    normalised = normalize(text)
+    words = set(normalised.split())
+    hindi_words = bool(words & _HINDI_MARKERS) or any(
+        len(w) >= 5 and w.startswith(_HINDI_STEMS) for w in words
+    )
+    if hindi_words:
+        return "hi"
+
+    confident = whisper_probability >= 0.6
+    if confident and label in _HINDI_ADJACENT:
+        return "hi"
+
+    if words & _ENGLISH_MARKERS:
+        return "en"
+
+    if confident and label == "en":
+        return "en"
+
+    return previous
 
 
 def parse_percentage(text: str) -> int | None:

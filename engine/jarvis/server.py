@@ -1,7 +1,10 @@
 """Localhost HTTP + WebSocket API for the Electron HUD.
 
 Bound to 127.0.0.1 on purpose: this exposes shutdown and messaging, so it must
-never be reachable off the machine.
+never be reachable off the machine. Loopback alone is not enough, though —
+every browser on this machine can also reach 127.0.0.1 — so every route beyond
+`/health` needs the launch token, and every command needs an unlocked session
+as well. See `security.py` for why those two are separate.
 """
 
 from __future__ import annotations
@@ -12,13 +15,22 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from .bus import Event, bus
 from .config import settings
-from .permissions import read_audit
+from .permissions import consent, read_audit
+from .security import (
+    PUBLIC_PATHS,
+    RateLimiter,
+    bearer_from_header,
+    redact,
+    session,
+    token_matches,
+)
 
 log = logging.getLogger(__name__)
 
@@ -30,13 +42,43 @@ log = logging.getLogger(__name__)
 # query field, which turned POST /command into a 422 and the WebSocket route
 # into a 403 handshake rejection.
 
+# The HUD is an Electron page loaded from disk, so its requests carry
+# `Origin: null`. That is the only browser origin allowed, and it still has to
+# present the token — an origin check alone would be worth nothing, since a
+# sandboxed iframe on any site also reports `null`.
+FILE_ORIGIN = "null"
+
+# WebSocket handshakes can't carry an Authorization header from a browser, so
+# the token rides in the subprotocol list instead of a query string — query
+# strings end up in logs and referrers.
+WS_PROTOCOL = "jarvis.bearer"
+
+# Generous for a person talking, useless for a script hammering the Claude key.
+COMMAND_LIMIT = RateLimiter(max_calls=60, window_sec=60.0)
+
 
 class Command(BaseModel):
     """Request body for POST /command."""
 
-    text: str
-    language: str = "en"
+    text: str = Field(max_length=4000)
+    language: str = Field(default="en", max_length=8)
     dry_run: bool = False
+
+
+class Unlock(BaseModel):
+    """Request body for POST /session/unlock."""
+
+    account: str = Field(default="", max_length=254)
+    uid: str = Field(default="", max_length=128)
+    #: How long the unlock stands before the desktop app must renew it. Matches
+    #: the lifetime of the Firebase ID token that vouched for the user.
+    ttl_sec: float = 3600.0
+
+
+class ConsentPayload(BaseModel):
+    """Request body for POST /consent — the permission screen's decision."""
+
+    granted: dict[str, bool] = Field(default_factory=dict)
 
 
 def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
@@ -50,25 +92,79 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
     app = FastAPI(title="Jarvis Engine", version="0.1.0",
                   docs_url=None, redoc_url=None, lifespan=lifespan)
 
-    # The HUD is an Electron page on a file:// origin.
+    # Only the file:// HUD, and only for the two headers it actually sends.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=[FILE_ORIGIN],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+        max_age=600,
     )
+
+    @app.middleware("http")
+    async def authenticate(request: Request, call_next):  # noqa: ANN001
+        path = request.url.path
+
+        # A browser page from a real website must never get through, even in
+        # the hypothetical where it has somehow learned the token.
+        origin = request.headers.get("origin")
+        if origin is not None and origin != FILE_ORIGIN:
+            log.warning("Rejected a request from origin %r", origin[:80])
+            return JSONResponse({"error": "forbidden origin"}, status_code=403)
+
+        # Preflights carry no Authorization by definition; CORSMiddleware has
+        # already answered them by the time a real request arrives.
+        if request.method == "OPTIONS" or path in PUBLIC_PATHS:
+            return await call_next(request)
+
+        if not token_matches(bearer_from_header(request.headers.get("authorization"))):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+        return await call_next(request)
+
+    def locked() -> bool:
+        """Whether commands should be refused for want of a signed-in user.
+
+        Mirrors the microphone's rule rather than inventing a second one: a
+        launch that doesn't require sign-in (a bare `python -m jarvis`) is
+        already authorised by the token, and demanding an unlock nobody can
+        perform would leave the HUD talking to an engine that ignores it.
+        """
+        return settings.security.session_required and not session.active
+
+    def locked_response() -> JSONResponse:
+        return JSONResponse(
+            {
+                "error": "Sign in to Jarvis before giving it commands.",
+                "code": "locked",
+            },
+            status_code=423,
+        )
+
+    # -- status -------------------------------------------------------------
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
+        """Deliberately says almost nothing: this is the one unauthenticated
+        route, and it exists only so the desktop app knows the process is up."""
+        return {"ok": True, "state": bus.state.value}
+
+    @app.get("/status")
+    async def status() -> dict[str, Any]:
         from .nlu.llm import brain
         from .skills.registry import registry
 
         return {
             "ok": True,
             "state": bus.state.value,
+            "language": orchestrator.last_language,
             "skills": len(registry.all()),
             "brain": brain.available,
             "wake_word": getattr(orchestrator.wake, "available", False),
+            "listening": orchestrator.listening_enabled,
+            "microphone": orchestrator.microphone_health(),
+            "session": session.snapshot(),
+            "consent": consent.snapshot(),
         }
 
     @app.get("/state")
@@ -86,6 +182,7 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
                         "name": s.name,
                         "description": s.description,
                         "risk": s.risk.value,
+                        "capability": s.capability.value if s.capability else None,
                         "examples": s.examples[:4],
                     }
                     for s in specs
@@ -98,8 +195,51 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
     async def audit(limit: int = 100) -> dict[str, Any]:
         return {"entries": read_audit(min(limit, 500))}
 
+    # -- session ------------------------------------------------------------
+
+    @app.get("/session")
+    async def get_session() -> dict[str, Any]:
+        return session.snapshot()
+
+    @app.post("/session/unlock")
+    async def unlock(payload: Unlock) -> dict[str, Any]:
+        session.unlock(payload.account, payload.uid, payload.ttl_sec)
+        await asyncio.to_thread(orchestrator.resume)
+        return session.snapshot()
+
+    @app.post("/session/lock")
+    async def lock() -> dict[str, Any]:
+        session.lock("desktop app signed out")
+        await asyncio.to_thread(orchestrator.pause)
+        return session.snapshot()
+
+    # -- consent ------------------------------------------------------------
+
+    @app.get("/consent")
+    async def get_consent() -> dict[str, Any]:
+        return consent.snapshot()
+
+    @app.post("/consent")
+    async def set_consent(payload: ConsentPayload) -> dict[str, Any]:
+        consent.save(payload.granted)
+        await asyncio.to_thread(orchestrator.apply_consent)
+        return consent.snapshot()
+
+    # -- commands -----------------------------------------------------------
+
     @app.post("/command")
-    async def command(payload: Command) -> dict[str, Any]:
+    async def command(payload: Command) -> Any:
+        if locked():
+            return locked_response()
+        allowed, retry_after = COMMAND_LIMIT.allow()
+        if not allowed:
+            return JSONResponse(
+                {"error": f"Too many commands — try again in {retry_after}s.",
+                 "code": "rate-limited"},
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+
         # Skills block on Win32 calls and the network, so keep them off the loop.
         reply = await asyncio.to_thread(
             orchestrator.handle_text, payload.text, payload.language,
@@ -112,13 +252,30 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
         return {"reply": reply}
 
     @app.post("/listen")
-    async def listen() -> dict[str, Any]:
+    async def listen() -> Any:
+        if locked():
+            return locked_response()
         orchestrator.trigger_listen()
         return {"ok": True}
 
+    # -- events -------------------------------------------------------------
+
     @app.websocket("/ws")
     async def websocket(ws: WebSocket) -> None:
-        await ws.accept()
+        # `new WebSocket(url, [WS_PROTOCOL, token])` arrives here as a
+        # comma-separated header. Nothing else may connect.
+        offered = [
+            p.strip() for p in (ws.headers.get("sec-websocket-protocol") or "").split(",")
+            if p.strip()
+        ]
+        origin = ws.headers.get("origin")
+        if (origin is not None and origin != FILE_ORIGIN) or len(offered) < 2 \
+                or offered[0] != WS_PROTOCOL or not token_matches(offered[1]):
+            log.warning("Rejected a WebSocket handshake (origin=%r)", (origin or "")[:80])
+            await ws.close(code=1008)
+            return
+
+        await ws.accept(subprotocol=WS_PROTOCOL)
         log.info("HUD connected")
 
         async def pump_events() -> None:
@@ -130,9 +287,13 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
             while True:
                 message = await ws.receive_json()
                 kind = message.get("type")
+                if kind in ("command", "listen") and locked():
+                    await ws.send_json({"type": "error", "message":
+                                        "Sign in to Jarvis before giving it commands."})
+                    continue
                 if kind == "command":
                     reply = await asyncio.to_thread(
-                        orchestrator.handle_text, message.get("text", ""),
+                        orchestrator.handle_text, str(message.get("text", ""))[:4000],
                         message.get("language", "en"), "hud",
                     )
                     if reply:
@@ -146,7 +307,7 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
         except WebSocketDisconnect:
             log.info("HUD disconnected")
         except Exception as exc:  # noqa: BLE001
-            log.debug("WebSocket closed: %s", exc)
+            log.debug("WebSocket closed: %s", redact(str(exc)))
         finally:
             pump.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -159,13 +320,20 @@ def serve(orchestrator) -> None:  # noqa: ANN001
     """Run the API server. Blocks until interrupted."""
     import uvicorn
 
+    host = settings.server.host
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        # Widening this puts shutdown and messaging on the network. Refuse
+        # rather than obey a config typo that hands the machine away.
+        log.error("server.host is %r — refusing to bind anywhere but loopback", host)
+        host = "127.0.0.1"
+
     app = create_app(orchestrator)
     config = uvicorn.Config(
         app,
-        host=settings.server.host,
+        host=host,
         port=settings.server.port,
         log_level="warning",
         access_log=False,
     )
-    log.info("HUD API on http://%s:%d", settings.server.host, settings.server.port)
+    log.info("HUD API on http://%s:%d (token required)", host, settings.server.port)
     uvicorn.Server(config).run()

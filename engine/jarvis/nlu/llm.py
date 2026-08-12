@@ -27,10 +27,17 @@ text-to-speech voice. Keep them short — one or two sentences for anything
 conversational, and a brief confirmation for actions. No markdown, no bullet
 points, no code blocks, no emoji: none of it survives being spoken.
 
-The user speaks Hindi, English, and a mix of the two. Reply in whichever
-language they addressed you in. When replying in Hindi, write in Devanagari
-script — the Hindi voice pronounces Devanagari correctly and mangles
-romanised Hindi. Keep proper nouns (app names, brands) in Latin script.
+The user speaks Hindi, English, and a mix of the two. Answer in the language
+they used — English question, English answer; Hindi question, Hindi answer.
+Never switch languages on your own, and never answer in both. A tag at the top
+of each message tells you which one was detected; that tag is the decision, so
+follow it even when the words in front of you look like the other language
+(romanised Hindi reads like English, and that is exactly the case the tag is
+there to settle).
+
+When replying in Hindi, write in Devanagari script — the Hindi voice
+pronounces Devanagari correctly and mangles romanised Hindi. Keep proper nouns
+(app names, brands, numbers) in Latin script.
 
 When the user wants something done on the computer, call the matching tool.
 You can call several tools in one turn if they asked for several things.
@@ -113,6 +120,19 @@ class Brain:
         }]
 
     @staticmethod
+    def _language_note(language: str) -> str:
+        """The one instruction that must not be left to inference.
+
+        The model is looking at romanised Hindi half the time, which is
+        indistinguishable from English at a glance. The engine has already
+        decided — from the script, the vocabulary and Whisper's own label —
+        so it states the answer rather than hoping.
+        """
+        if (language or "").lower().startswith("hi"):
+            return "[reply in Hindi, Devanagari script]\n"
+        return "[reply in English]\n"
+
+    @staticmethod
     def _context_note(ctx: dict[str, Any] | None) -> str:
         if not ctx:
             return ""
@@ -144,7 +164,7 @@ class Brain:
         client = self._ensure_client()
         tools = registry.tool_schemas()
 
-        user_turn = self._context_note(context) + text
+        user_turn = self._language_note(language) + self._context_note(context) + text
         messages = [*self._history, {"role": "user", "content": user_turn}]
 
         t0 = time.perf_counter()
@@ -203,12 +223,13 @@ class Brain:
             return ""
 
         client = self._ensure_client()
+        asked = self._language_note(language) + question
         try:
             response = client.messages.create(
                 model=self.cfg.model,
                 max_tokens=self.cfg.max_tokens,
                 system=self._system_blocks(),
-                messages=[*self._history, {"role": "user", "content": question}],
+                messages=[*self._history, {"role": "user", "content": asked}],
                 thinking={"type": "adaptive"},
                 output_config={"effort": self.cfg.effort},
             )
@@ -221,7 +242,7 @@ class Brain:
 
         answer = " ".join(b.text for b in response.content if b.type == "text").strip()
         if answer:
-            self._remember(question, answer)
+            self._remember(asked, answer)
         return answer
 
     # -- conversation memory ------------------------------------------------

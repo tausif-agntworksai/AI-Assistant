@@ -4,9 +4,8 @@
 
 audio:
   # null = pick automatically, skipping virtual inputs (DroidCam, Stereo Mix,
-  # VB-Audio and friends) that Windows sometimes makes the system default —
-  # choosing one of those means the assistant hears silence forever.
-  # To pin a device, use `--list-devices` and set an index or a name substring.
+  # VB-Audio and friends) that Windows sometimes makes the system default.
+  # To pin one, use `--list-devices` and set an index or a name substring.
   input_device: null
   output_device: null
   sample_rate: 16000
@@ -15,33 +14,42 @@ audio:
 wake_word:
   enabled: true
   model: hey_jarvis        # openWakeWord pretrained: hey_jarvis, alexa, hey_mycroft
-  threshold: 0.5           # raise toward 0.7 if it triggers on its own
+  threshold: 0.5           # lower = more sensitive; raise toward 0.7 if it self-triggers
   cooldown_sec: 2.0        # ignore re-triggers for this long after a detection
 
 vad:
   backend: silero          # silero | energy
   threshold: 0.5           # silero speech probability
-  silence_ms: 700          # end the utterance after this much trailing silence
-  min_speech_ms: 250       # ignore blips shorter than this
+  silence_ms: 650          # end the utterance after this much trailing silence
+  # Used instead of silence_ms while barely any speech has happened yet — a
+  # pause between "chrome" and "kholo" must not end the turn, because half a
+  # command routes to nothing and you end up saying the whole thing again.
+  patience_silence_ms: 1300
+  min_speech_ms: 200       # ignore blips shorter than this
   max_utterance_sec: 15    # hard cap so a stuck mic can't record forever
-  preroll_ms: 300          # audio kept from *before* speech started
+  preroll_ms: 600          # audio kept from *before* speech started
+  no_speech_timeout_sec: 6 # how long to wait for you to start talking
 
 stt:
   backend: local           # local | cloud
-  # Benchmarked on a Ryzen 7 5850U: base = 0.63x realtime (~1.5s per spoken
-  # command), small = 2.0x (~4.6s) with no better Hindi accuracy. Raise to
-  # `small` only if longer dictation needs it.
-  model: base              # tiny | base | small | medium
+  # Two local tiers. Every utterance is decoded by `model` first; only the
+  # ones that come back unsure — or whose words matched no skill — are
+  # re-decoded by `accurate_model` from the same recording. That way common
+  # commands stay fast and the hard ones stop needing a second attempt.
+  model: base              # tiny | base | small | medium  (the fast pass)
+  accurate_model: small    # the second opinion; set to "" to turn it off
+  escalate: true
+  min_confidence: 0.62     # below this the fast pass is re-checked
   compute_type: int8       # int8 is ~4x faster than float32 on this CPU
   language: null           # null = auto-detect per utterance (needed for Hinglish)
-  beam_size: 1             # 1 = greedy = fastest; raise to 5 for accuracy
-  # More threads measured *slower* (16 threads ~40% worse than 4) — the model
-  # is small enough that thread oversubscription costs more than it gains.
+  beam_size: 3             # 1 = greedy = fastest; the accurate pass always uses 5
+  best_of: 3
+  # More threads measured *slower* here (16 threads ~40% worse than 4).
   cpu_threads: 4
 
 tts:
   backend: edge            # edge | sapi | none
-  # Voices are chosen by the language Whisper detected in your command.
+  # Voices are chosen by the language of your command, not by a fixed setting.
   voice_hi: hi-IN-MadhurNeural
   voice_en: en-IN-NeerjaNeural
   rate: "+10%"
@@ -70,11 +78,20 @@ permissions:
   allow_critical_without_confirm: false
   confirm_timeout_sec: 12
 
+security:
+  # Refuse to open the microphone until someone has signed in. The desktop app
+  # turns this on for its own launches (JARVIS_REQUIRE_SESSION=1); leaving it
+  # false here keeps `python -m jarvis` usable from a terminal.
+  require_session: false
+
 server:
-  host: 127.0.0.1
+  host: 127.0.0.1          # loopback only — the API can shut the machine down
   port: 8756               # WebSocket + HTTP for the Electron HUD
 
 assistant:
   name: Jarvis
   # Language for replies when detection is ambiguous: hi | en | auto
   default_reply_language: auto
+  # Seconds to keep listening after a reply, so a follow-up or a correction
+  # needs no wake word. 0 disables it.
+  followup_sec: 6
