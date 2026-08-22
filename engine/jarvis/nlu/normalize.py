@@ -136,6 +136,15 @@ _SPELLING_FIXES = {
     "wolume": "volume", "volum": "volume", "walyum": "volume",
     "brightnes": "brightness", "brighness": "brightness",
     "kolo": "kholo", "kolho": "kholo", "cholo": "kholo",
+    # Every Whisper size mangles "sula do" (put to sleep) the same handful of
+    # ways, and none of them are English words, so mapping them is safe. This
+    # was the one command all four model sizes failed in the benchmark — a
+    # bigger model did not fix it and this line does.
+    "solado": "sulao", "sulado": "sulao", "soulado": "sulao",
+    "sulade": "sulao", "sulao": "sulao", "sulaado": "sulao",
+    "caro": "karo", "kro": "karo", "karro": "karo",
+    "tamar": "timer", "taymar": "timer", "minakt": "minute", "minit": "minute",
+    "paj": "panch", "panch": "panch", "pach": "panch",
     "bandh": "band", "bund": "band",
     "karado": "kardo", "kardo": "kardo",
     "batao": "batao", "bathao": "batao", "batado": "batao",

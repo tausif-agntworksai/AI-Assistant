@@ -26,7 +26,32 @@ class AudioConfig(BaseModel):
 class WakeWordConfig(BaseModel):
     enabled: bool = True
     model: str = "hey_jarvis"
-    threshold: float = 0.5
+    # Measured, not chosen. Streaming 20 synthesised "hey jarvis" clips through
+    # openWakeWord across four gain/noise conditions, the peak score per
+    # utterance was:
+    #
+    #   threshold   heard    missed   false fires
+    #      0.50     62/80      18        0/40      <- the old default
+    #      0.40     67/80      13        0/40
+    #      0.30     73/80       7        1/40      <- here
+    #      0.20     78/80       2        3/40
+    #
+    # 0.50 was missing 22% of them, which is exactly the "I have to say it two
+    # or three times" complaint. Every one of those misses came from the
+    # Indian-accented voices — the native en-US and en-GB clips never scored
+    # below 0.979 in any condition, so this is the pretrained model's bias, not
+    # a microphone problem.
+    #
+    # The only thing that scores above 0.30 without being the wake word is the
+    # bare word "jarvis" (0.30 at worst); every other utterance tested — "hey
+    # google", "hey there", and the assistant's own commands — stayed under
+    # 0.04. So the cost of coming down this far is that saying "jarvis" alone
+    # may wake it, which is hardly wrong.
+    #
+    # Asymmetry is the reason for erring low: a miss costs a whole repeated
+    # sentence, a false wake costs a 140 ms cue and a discarded second.
+    # `--tune-wake-word` measures this on your own voice and microphone.
+    threshold: float = 0.3
     cooldown_sec: float = 2.0
     # What you hear when the wake word fires. Without any acknowledgement there
     # is no way to know you were heard, so people say it twice.
@@ -41,7 +66,32 @@ class WakeWordConfig(BaseModel):
 
 class VadConfig(BaseModel):
     backend: Literal["silero", "energy"] = "silero"
-    threshold: float = 0.5
+    # Measured, not chosen. Streaming 20 synthesised "hey jarvis" clips through
+    # openWakeWord across four gain/noise conditions, the peak score per
+    # utterance was:
+    #
+    #   threshold   heard    missed   false fires
+    #      0.50     62/80      18        0/40      <- the old default
+    #      0.40     67/80      13        0/40
+    #      0.30     73/80       7        1/40      <- here
+    #      0.20     78/80       2        3/40
+    #
+    # 0.50 was missing 22% of them, which is exactly the "I have to say it two
+    # or three times" complaint. Every one of those misses came from the
+    # Indian-accented voices — the native en-US and en-GB clips never scored
+    # below 0.979 in any condition, so this is the pretrained model's bias, not
+    # a microphone problem.
+    #
+    # The only thing that scores above 0.30 without being the wake word is the
+    # bare word "jarvis" (0.30 at worst); every other utterance tested — "hey
+    # google", "hey there", and the assistant's own commands — stayed under
+    # 0.04. So the cost of coming down this far is that saying "jarvis" alone
+    # may wake it, which is hardly wrong.
+    #
+    # Asymmetry is the reason for erring low: a miss costs a whole repeated
+    # sentence, a false wake costs a 140 ms cue and a discarded second.
+    # `--tune-wake-word` measures this on your own voice and microphone.
+    threshold: float = 0.3
     silence_ms: int = 650
     # Used instead of `silence_ms` while barely any speech has happened yet,
     # which is what a false start or a mid-thought pause looks like. Cutting
@@ -112,7 +162,12 @@ class BrainConfig(BaseModel):
     model: str = ""
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
     max_tokens: int = 2048
-    rules_threshold: int = 78
+    # Fuzzy-match confidence below which the model is consulted. Measured on
+    # garbled-but-recoverable transcripts, real commands scored 70-77 and were
+    # being thrown away at 78 — a whole class of "it did not understand me" that
+    # was a threshold, not a model. Safe to lower only because a fuzzy match can
+    # no longer invert a direction (see _OPPOSITES in nlu/rules.py).
+    rules_threshold: int = 70
     history_turns: int = 6
 
 

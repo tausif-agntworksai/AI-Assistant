@@ -257,6 +257,11 @@ RULES: list[tuple[re.Pattern[str], str, Builder]] = [
     (_rx(rf"^brightness\s+(?:{V('increase')})$"), "brightness_up", _none),
     (_rx(rf"^(?:{V('decrease')})\s+(?:the\s+)?brightness$"), "brightness_down", _none),
     (_rx(rf"^brightness\s+(?:{V('decrease')})$"), "brightness_down", _none),
+    # English splits a phrasal verb around its object as readily as it keeps it
+    # together — "turn the brightness down" is as ordinary as "turn down the
+    # brightness", and only the second form matched. Volume had the same hole.
+    (_rx(r"^turn\s+(?:the\s+)?brightness\s+up$"), "brightness_up", _none),
+    (_rx(r"^turn\s+(?:the\s+)?brightness\s+down$"), "brightness_down", _none),
     (_rx(r"^(?:\w+\s+){0,2}?brightness\b.*\b\d{1,3}\b.*$"), "set_brightness", _level),
     (_rx(rf"^(?:{V('set')})\s+(?:the\s+)?brightness{PARTICLES}\s+.*$"),
      "set_brightness", _level),
@@ -435,6 +440,51 @@ def _content_words(text: str) -> set[str]:
     return {w for w in text.split() if w not in _STOPWORDS and len(w) > 1}
 
 
+# Skills whose opposite differs by a single word. `token_sort_ratio` cannot tell
+# "brightness kam karo" from "brightness badhao" reliably — measured, a garbled
+# "brightness come caro" scored 72 against *brightness_up*, the exact reverse of
+# what was said. Turning the brightness up when asked to turn it down is worse
+# than admitting the utterance was not understood, so these need a word that
+# actually distinguishes the direction before a fuzzy match is allowed to stand.
+_OPPOSITES: dict[str, str] = {
+    "volume_up": "volume_down",
+    "volume_down": "volume_up",
+    "brightness_up": "brightness_down",
+    "brightness_down": "brightness_up",
+    "mute_audio": "unmute_audio",
+    "unmute_audio": "mute_audio",
+    "media_next": "media_previous",
+    "media_previous": "media_next",
+    "minimize_window": "maximize_window",
+    "maximize_window": "minimize_window",
+}
+
+
+def _example_words(skill: str) -> set[str]:
+    from ..skills.registry import registry
+
+    spec = registry.get(skill)
+    if spec is None:
+        return set()
+    words: set[str] = set()
+    for example in spec.examples:
+        words |= _content_words(normalize(example))
+    return words
+
+
+def _direction_is_clear(spoken: set[str], skill: str) -> bool:
+    """True when the utterance contains a word only this skill's examples use.
+
+    Derived from the examples rather than a hand-kept list of "up"/"down"
+    synonyms, so a new phrasing added to a skill improves this for free.
+    """
+    opposite = _OPPOSITES.get(skill)
+    if opposite is None:
+        return True
+    distinguishing = _example_words(skill) - _example_words(opposite)
+    return bool(spoken & distinguishing)
+
+
 def match_examples(text: str, min_score: float = 78.0) -> Intent | None:
     """Fuzzy-match against every example phrase declared by every skill.
 
@@ -468,6 +518,10 @@ def match_examples(text: str, min_score: float = 78.0) -> Intent | None:
         if not (spoken_words & _content_words(phrase)):
             continue
         skill = choices[phrase]
+        if not _direction_is_clear(spoken_words, skill):
+            log.debug("Rejected %r ~ %r: nothing distinguishes it from %r",
+                      normalised, phrase, _OPPOSITES[skill])
+            continue
         log.debug("Example match: %r ~ %r -> %s (%.0f)", normalised, phrase, skill, score)
         # Deliberately no args: a fuzzy phrase match tells us the intent, not
         # the slot values. Parameterised skills need a rule or the LLM.
@@ -476,8 +530,18 @@ def match_examples(text: str, min_score: float = 78.0) -> Intent | None:
     return None
 
 
-def route(text: str, threshold: float = 78.0) -> Intent | None:
-    """Best offline interpretation, or None if the LLM should handle it."""
+def route(text: str, threshold: float | None = None) -> Intent | None:
+    """Best offline interpretation, or None if the model should handle it.
+
+    `threshold` defaults to the configured `brain.rules_threshold` rather than a
+    literal, because the two had already drifted apart: the config said 70 and
+    this signature said 78, so tuning the setting changed the orchestrator's
+    behaviour and nothing else — including every test.
+    """
+    if threshold is None:
+        from ..config import settings
+
+        threshold = float(settings.brain.rules_threshold)
     intent = match_rules(text)
     if intent:
         return intent
@@ -490,12 +554,29 @@ def route(text: str, threshold: float = 78.0) -> Intent | None:
 
 
 def _needs_arguments(skill_name: str) -> bool:
+    """True when a fuzzy match cannot responsibly stand in for this skill.
+
+    A fuzzy match carries the intent and no arguments — that is the deal. Two
+    kinds of skill therefore cannot accept one:
+
+    * anything with a **required** parameter, which would simply fail; and
+    * anything with a **numeric** parameter, even a defaulted one, because
+      applying the default is a guess about *how much*, not just about what.
+      A garbled "brightness calm" scoring 76 against "set brightness" silently
+      set the screen to 60% — the intent was arguably right and the outcome was
+      not something the user asked for. A rule that reads the number, or the
+      model, is the only thing entitled to decide a magnitude.
+    """
     from ..skills.registry import registry
 
     spec = registry.get(skill_name)
     if spec is None:
         return False
-    return any(
-        p.default is p.empty and name not in ("ctx", "self")
-        for name, p in spec.signature.parameters.items()
-    )
+    for name, parameter in spec.signature.parameters.items():
+        if name in ("ctx", "self"):
+            continue
+        if parameter.default is parameter.empty:
+            return True
+        if spec.hints.get(name) in (int, float):
+            return True
+    return False

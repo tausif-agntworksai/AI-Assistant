@@ -57,6 +57,13 @@ hiddenimports += [
     "jarvis.stt.selection", "jarvis.tts.edge", "jarvis.tts.sapi",
 ]
 
+# Diagnostics, imported inside their own command handlers so that starting the
+# assistant does not pay for them. PyInstaller only follows imports it can see,
+# so a lazily-imported diagnostic goes missing from the frozen build — and it
+# goes missing exactly when someone is already trying to work out why the
+# microphone is not behaving.
+hiddenimports += ["jarvis.audio.wake_tune"]
+
 hiddenimports += [
     "win32com.client", "pythoncom", "pywintypes", "win32gui", "win32process",
     "win32api", "win32con", "wmi", "uvicorn.logging", "uvicorn.loops.auto",

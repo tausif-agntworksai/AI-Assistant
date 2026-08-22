@@ -274,7 +274,29 @@ typed command exercises exactly the path a spoken one takes.
 .\run-engine.bat --test-tts "नमस्ते, मैं जार्विस हूँ"        # check the Hindi voice
 .\run-engine.bat --test-mic 5                              # record 5s and transcribe
 .\run-engine.bat --list-devices                            # pick the right mic
+.\run-engine.bat --tune-wake-word                          # measure your own voice
 ```
+
+### If the wake word needs repeating
+
+`--tune-wake-word` asks you to say "hey jarvis" five times, records the peak
+detection score for each, then listens to your room saying nothing and records
+the highest score *that* produced. It recommends a threshold between the two, or
+tells you that no such threshold exists — which means the microphone or the room
+is the problem, not the setting. Add `--apply` to write the result to
+`config.yaml`.
+
+Two things worth knowing before you run it, both measured (see
+[docs/HEARING.md](docs/HEARING.md)):
+
+- **Say it as one connected phrase.** A pause between "hey" and "jarvis" costs
+  up to 0.86 of detection score. Slowing down and separating the words after a
+  miss — the natural reaction — makes the next attempt score *lower*.
+- **The pretrained model is weaker on accented English.** Native en-US and
+  en-GB test clips never scored below 0.979; Indian-accented clips of the same
+  phrase ranged from 0.079 to 0.999. The shipped threshold of 0.30 is set for
+  the latter, and there is no larger wake-word model to move to — only four
+  pretrained ones exist and only one of them says "jarvis".
 
 Run the tests with `python -m pytest` from `engine\`.
 
@@ -459,7 +481,7 @@ Notable settings:
 | `stt.cpu_threads` | `4` | More was measurably *slower* — 16 threads ran ~40% worse than 4. |
 | `vad.patience_silence_ms` | `1300` | The longer endpoint used while barely any speech has happened, so a pause between “chrome” and “kholo” doesn't end the turn. |
 | `assistant.followup_sec` | `6` | How long the microphone stays open after a reply, so a correction needs no wake word. `0` disables it. |
-| `wake_word.threshold` | `0.5` | Lower is more sensitive; raise toward 0.7 if it triggers on its own. |
+| `wake_word.threshold` | `0.3` | Lower is more sensitive. Measured: 0.5 missed 22% of utterances and 0.3 misses 9%, while the only thing that falsely scores above 0.3 is the bare word "jarvis". Run `--tune-wake-word` to measure your own voice. |
 | `security.require_session` | `false` | Refuse to open the microphone until someone signs in. The desktop app turns this on for its own launches; leaving it false keeps `python -m jarvis` usable from a terminal. |
 | `brain.model` | `claude-opus-5` | Thinking stays on: with it disabled this model can emit a tool call as plain text that silently never runs. |
 | `brain.effort` | `low` | Keeps spoken replies quick. |
