@@ -42,27 +42,8 @@
 .gate-form { display: flex; flex-direction: column; gap: 11px; }
 .gate-foot { margin-top: 14px; text-align: center; }
 
-/* ---- tabs ---- */
-.tabs {
-  display: flex;
-  gap: 3px;
-  margin-bottom: 15px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: 3px;
-}
-.tabs button {
-  flex: 1;
-  padding: 7px;
-  border-radius: 6px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
-  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
-}
-.tabs button.active { background: var(--panel-2); color: var(--text); font-weight: 600; }
-.tabs button:hover:not(.active) { color: var(--text); }
+/* The shared .tabs rules live in theme.css; this is only the gate's spacing. */
+.gate-card .tabs { margin-bottom: 15px; }
 
 /* ---- TOTP enrolment ---- */
 .qr {

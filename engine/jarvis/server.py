@@ -42,11 +42,17 @@ log = logging.getLogger(__name__)
 # query field, which turned POST /command into a 422 and the WebSocket route
 # into a 403 handshake rejection.
 
-# The HUD is an Electron page loaded from disk, so its requests carry
-# `Origin: null`. That is the only browser origin allowed, and it still has to
-# present the token — an origin check alone would be worth nothing, since a
-# sandboxed iframe on any site also reports `null`.
-FILE_ORIGIN = "null"
+# The HUD is an Electron page loaded from disk, and Chromium spells that origin
+# two different ways depending on the request: `null` for an HTTP fetch, but the
+# literal `file://` for a WebSocket handshake from the very same page. Accepting
+# only one of them refused every socket while letting every fetch through — the
+# HUD reconnected forever and, since engine state arrives over that socket, sat
+# on "starting…" indefinitely.
+#
+# Both are safe to allow because neither is what guards this API: the launch
+# token is. A page on a real website cannot forge either value, and a local HTML
+# file still cannot read the token.
+LOCAL_ORIGINS = frozenset({"null", "file://"})
 
 # WebSocket handshakes can't carry an Authorization header from a browser, so
 # the token rides in the subprotocol list instead of a query string — query
@@ -129,7 +135,7 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
     # Only the file:// HUD, and only for the two headers it actually sends.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[FILE_ORIGIN],
+        allow_origins=sorted(LOCAL_ORIGINS),
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
         max_age=600,
@@ -142,7 +148,7 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
         # A browser page from a real website must never get through, even in
         # the hypothetical where it has somehow learned the token.
         origin = request.headers.get("origin")
-        if origin is not None and origin != FILE_ORIGIN:
+        if origin is not None and origin not in LOCAL_ORIGINS:
             log.warning("Rejected a request from origin %r", origin[:80])
             return JSONResponse({"error": "forbidden origin"}, status_code=403)
 
@@ -384,7 +390,7 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
             if p.strip()
         ]
         origin = ws.headers.get("origin")
-        if (origin is not None and origin != FILE_ORIGIN) or len(offered) < 2 \
+        if (origin is not None and origin not in LOCAL_ORIGINS) or len(offered) < 2 \
                 or offered[0] != WS_PROTOCOL or not token_matches(offered[1]):
             log.warning("Rejected a WebSocket handshake (origin=%r)", (origin or "")[:80])
             await ws.close(code=1008)

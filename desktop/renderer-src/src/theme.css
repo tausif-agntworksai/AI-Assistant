@@ -152,6 +152,32 @@ input, select { font: inherit; color: inherit; }
   min-width: 0;
 }
 
+/* ---- tabs ----
+   Shared, not per-screen. This lived in auth.css and the HUD never imported
+   it, so the HUD's nav got no layout at all and its three labels ran together
+   as one word: "ConversationSkillsActivity". Anything two screens use belongs
+   here. */
+.tabs {
+  display: flex;
+  gap: 3px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+}
+.tabs button {
+  flex: 1;
+  padding: 7px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.tabs button.active { background: var(--panel-2); color: var(--text); font-weight: 600; }
+.tabs button:hover:not(.active) { color: var(--text); }
+
 .row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .col { display: flex; flex-direction: column; min-width: 0; }
 .grow { flex: 1; min-width: 0; }

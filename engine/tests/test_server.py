@@ -323,6 +323,38 @@ def test_websocket_accepts_and_replays_state(client):
         assert "state" in first
 
 
+@pytest.mark.parametrize("origin", ["null", "file://"])
+def test_the_real_origins_a_local_page_sends_are_accepted(client, origin):
+    """Chromium spells a file:// page's origin two different ways.
+
+    An HTTP fetch reports `null`; a WebSocket handshake from the very same page
+    reports the literal `file://`. Allowing only one of them refused every
+    socket while letting every fetch through — so the HUD reconnected forever
+    and, since engine state arrives over that socket, sat on "starting…"
+    indefinitely. TestClient sends no Origin by default, which is exactly why
+    this went unnoticed.
+    """
+    assert client.get("/status", headers={**AUTH, "Origin": origin}).status_code == 200
+
+    with client.websocket_connect(
+        "/ws", subprotocols=[WS_PROTOCOL, API_TOKEN], headers={"Origin": origin}
+    ) as ws:
+        assert ws.receive_json()["type"] == "state"
+
+
+def test_a_website_origin_is_still_refused_on_the_websocket(client):
+    """Widening the allow-list must not open it to a real page."""
+    from starlette.websockets import WebSocketDisconnect
+
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(
+            "/ws",
+            subprotocols=[WS_PROTOCOL, API_TOKEN],
+            headers={"Origin": "https://evil.example"},
+        ) as ws:
+            ws.receive_json()
+
+
 def test_websocket_without_the_token_is_closed(client):
     from starlette.websockets import WebSocketDisconnect
 

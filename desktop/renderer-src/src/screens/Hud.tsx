@@ -56,8 +56,14 @@ export function Hud() {
     return () => window.removeEventListener("keydown", onKey);
   }, [settingsOpen]);
 
-  const label =
-    engine.state === "listening" && engine.followUp
+  // Distinguish "the engine is booting" from "we cannot reach the engine".
+  // Both used to read "starting…", which is how a refused WebSocket managed to
+  // look like a slow launch for as long as anyone cared to wait.
+  const label = !engine.connected
+    ? engine.state === "error"
+      ? "engine unavailable — see the log"
+      : "connecting to the engine…"
+    : engine.state === "listening" && engine.followUp
       ? "listening — go ahead"
       : (STATE_LABEL[engine.state] ?? engine.state);
 
