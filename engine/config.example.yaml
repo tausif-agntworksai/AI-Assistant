@@ -58,7 +58,13 @@ tts:
 
 brain:
   enabled: true
-  model: claude-opus-5
+  # Which AI provider and model to start with. The settings screen in the app
+  # overrides both — these are only the defaults for a fresh install or a bare
+  # `python -m jarvis`. Leave `model` empty for that provider's own default,
+  # so switching provider doesn't mean editing two lines.
+  #   anthropic | openai | gemini | groq | deepseek | mistral
+  provider: anthropic
+  model: ""
   # Effort trades latency for depth. "low" keeps spoken replies snappy;
   # thinking stays ON deliberately — with it disabled this model can emit a
   # tool call as plain text, which would silently never execute.

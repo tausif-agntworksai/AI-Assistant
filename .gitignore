@@ -25,6 +25,8 @@ logs/
 # Node / Electron
 node_modules/
 dist/
+# The built renderer; `npm run build` regenerates it.
+renderer-dist/
 release/
 out/
 

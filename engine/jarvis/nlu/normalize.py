@@ -315,6 +315,7 @@ mujhe mera meri tumhara aapka hume hamara
 hai hain tha thi hoga hogi raha rahi rahe
 nahi haan bilkul theek accha achha zara thoda phir abhi
 mausam tareekh khabar khabrein baje ghante
+aur bhi kuch sab yahan wahan idhar udhar
 """.split())
 
 # Whisper often glues Hindi words together ("sula do" -> "sulado"), which
@@ -340,23 +341,36 @@ def looks_hindi(text: str) -> bool:
     return any(len(w) >= 5 and w.startswith(_HINDI_STEMS) for w in words)
 
 
-# Words that only appear in English sentences. Deliberately excludes anything
-# that doubles as a romanised Hindi word: "the" is Hindi for "were", "band" is
-# "closed", "do" is "two", "so" is "hundred", "me" is "in".
+# Words that only appear in English sentences.
+#
+# Two deliberate exclusions. Anything that doubles as a romanised Hindi word is
+# out — "the" is Hindi for "were", "band" is "closed", "do" is "two", "so" is
+# "hundred", "me" is "in". So is every technology loanword: "battery",
+# "volume", "screen", "file" and "window" get used constantly *inside* Hindi
+# sentences ("battery kitni bachi hai"), so their presence says nothing about
+# which language a sentence is in. Listing them made a bare "volume" read as
+# English in the middle of a Hindi conversation.
 _ENGLISH_MARKERS = frozenset("""
 what which who whose why how when where whats hows
 is are was were am been being have has had does did
 can could would should will shall must might may
 please tell show open close turn set make give find search play stop start
-about after again all also always another any because before between both
-computer laptop screen volume brightness battery music song file folder window
+explain describe create write read send remind translate summarise summarize
+about after all also always another any because before between both
 my your our their his her its this that these those there here
-and but for from into with without over under again just only very
+but from into with without over under just only very
 """.split())
 
 # Whisper regularly labels short romanised Hindi as one of these. They all mean
 # the same thing for our purposes: the person was not speaking English.
 _HINDI_ADJACENT = frozenset({"hi", "ur", "mr", "ne", "sa", "bn", "pa", "gu"})
+
+# Utterances of at most this many words are treated as too short to judge on
+# their own, so they inherit the language of the conversation. Two, because
+# that covers the real follow-ups — "aur?", "spotify", "band karo" — while a
+# three-word sentence has room for Hindi evidence and its absence means
+# something.
+_AMBIGUOUS_MAX_WORDS = 2
 
 
 def detect_language(
@@ -382,8 +396,15 @@ def detect_language(
          gets mistaken for (Urdu, Marathi, Nepali…).
       4. Distinctive English words, with no Hindi markers present.
       5. A confident Whisper label of English.
-      6. Whatever language the conversation was already in — a follow-up
-         ("aur battery?") inherits rather than resetting to English.
+      6. A whole sentence with no Hindi evidence anywhere in it — English.
+      7. Only then: whatever language the conversation was already in.
+
+    Step 6 is what stops step 7 overreaching. Inheriting the previous turn is
+    right for "aur?" or "spotify", which are too short to judge on their own —
+    but it was also catching "explain quantum computing to me", which is
+    plainly English and merely happened to follow a Hindi command. A sentence
+    long enough to carry Hindi evidence and carrying none is English; anything
+    shorter is genuinely ambiguous and inherits.
     """
     label = (whisper_language or "").lower()[:2]
     previous = "hi" if (previous or "en").lower().startswith("hi") else "en"
@@ -407,6 +428,9 @@ def detect_language(
         return "en"
 
     if confident and label == "en":
+        return "en"
+
+    if len(words) >= _AMBIGUOUS_MAX_WORDS + 1:
         return "en"
 
     return previous

@@ -594,8 +594,18 @@ class Orchestrator:
         from .nlu.llm import brain
 
         if not brain.available:
-            log.info("No local rule matched and no API key is set: %r", text)
-            return Turn(reply="", understood=False)
+            # The rules didn't recognise it and there is no model to ask. Say so
+            # once and point at the fix, rather than going quiet and leaving the
+            # user to conclude the assistant is broken — this is the normal
+            # state of a fresh install, not a fault.
+            log.info("No local rule matched and no model key is set: %r", text)
+            bus.publish(Event.NEEDS_KEY, reason="no-api-key", transcript=text[:200])
+            return Turn(
+                reply=("इसके लिए मुझे एक AI key चाहिए। Settings खोल दी है।"
+                       if language.startswith("hi")
+                       else "I need an AI key for that one — I've opened settings."),
+                understood=True,
+            )
 
         if not consent.allows(Capability.NETWORK):
             log.info("Brain skipped — internet permission not granted")

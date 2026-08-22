@@ -70,18 +70,28 @@ def get_battery() -> object:
     ],
 )
 def get_system_status() -> object:
+    from pathlib import Path
+
     import psutil
 
     cpu = psutil.cpu_percent(interval=0.4)
     memory = psutil.virtual_memory()
-    disk = psutil.disk_usage("C:\\")
+    # The volume the user's own files are on, whatever it's called. `C:\\` was
+    # hardcoded, which raises off Windows — and is wrong even on Windows for
+    # anyone whose profile lives on another drive. `.anchor` gives "C:\\" here
+    # and "/" elsewhere.
+    disk = psutil.disk_usage(Path.home().anchor or "/")
     free_gb = disk.free / (1024 ** 3)
+    # Spoken aloud, so drop the colon — a voice reading "C colon" is worse
+    # than one reading "C". Off Windows the anchor is just "/", which names
+    # nothing useful, so say "disk".
+    where = Path.home().anchor.rstrip("\\/:") or "disk"
 
     return ok(
         f"CPU at {cpu:.0f} percent, memory at {memory.percent:.0f} percent, "
-        f"and {free_gb:.0f} gigabytes free on C.",
+        f"and {free_gb:.0f} gigabytes free on {where}.",
         f"CPU {cpu:.0f} percent, memory {memory.percent:.0f} percent, "
-        f"aur C drive me {free_gb:.0f} GB khali hai.",
+        f"aur {where} me {free_gb:.0f} GB khali hai.",
         cpu=cpu, memory=memory.percent, disk_free_gb=round(free_gb, 1),
     )
 

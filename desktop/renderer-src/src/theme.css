@@ -1,0 +1,186 @@
+/*
+ * One token vocabulary, two themes.
+ *
+ * Neither of the two apps in this repo had this: the HUD was dark-only, the
+ * sibling calculator light-only, and both hard-coded a hundred-odd hex literals
+ * inline. So the names here are semantic rather than descriptive — `--danger`,
+ * not `--red` — which is what lets the same stylesheet carry both palettes and
+ * lets a third arrive later without a find-and-replace.
+ *
+ * Dark is the default. This is a frameless window pinned on top of whatever you
+ * are working on, and a bright panel floating over your work is more intrusive
+ * than a dark one. Light exists because the OS asks for it, and because some
+ * people work in daylight.
+ *
+ * Resolution order, which matters: bare :root is the light palette so nothing
+ * is ever undefined; the media query flips to dark unless the user pinned
+ * light; and [data-theme] wins over both so the in-app toggle always works.
+ */
+
+:root {
+  --bg: #f4f5f9;
+  --panel: #ffffff;
+  --panel-2: #eef0f6;
+  --line: #dfe3ec;
+  --line-strong: #c8cedd;
+
+  --text: #14161f;
+  --muted: #5c6478;
+  --faint: #8b93a7;
+
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef2ff;
+  --accent-ink: #ffffff;
+
+  --ok: #047857;
+  --ok-soft: #ecfdf5;
+  --warn: #a16207;
+  --warn-soft: #fffbeb;
+  --danger: #b91c1c;
+  --danger-soft: #fef2f2;
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --radius-pill: 999px;
+  --card-shadow: 0 1px 2px rgba(20, 22, 31, .04), 0 6px 18px rgba(20, 22, 31, .07);
+  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+
+  --font: "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, sans-serif;
+  /* Devanagari needs a font that actually has the glyphs. Segoe UI does on
+     Windows 10+; the rest are for macOS and Linux. */
+  --font-hi: "Segoe UI Variable Text", "Nirmala UI", "Kohinoor Devanagari",
+             "Noto Sans Devanagari", var(--font);
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
+
+  --ease: cubic-bezier(.22, .61, .36, 1);
+  --fast: .14s;
+  --slow: .32s;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0a0d14;
+    --panel: #12161f;
+    --panel-2: #1a1f2b;
+    --line: #232a38;
+    --line-strong: #333c4e;
+
+    --text: #e8ecf5;
+    --muted: #94a0b8;
+    --faint: #6b7688;
+
+    --accent: #38d9ff;
+    --accent-hover: #6ee2ff;
+    --accent-soft: #0e2b36;
+    --accent-ink: #04141b;
+
+    --ok: #4ade80;
+    --ok-soft: #10281c;
+    --warn: #fbbf24;
+    --warn-soft: #2b2210;
+    --danger: #ff6b7a;
+    --danger-soft: #2c1417;
+
+    --card-shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .34);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0a0d14;
+  --panel: #12161f;
+  --panel-2: #1a1f2b;
+  --line: #232a38;
+  --line-strong: #333c4e;
+
+  --text: #e8ecf5;
+  --muted: #94a0b8;
+  --faint: #6b7688;
+
+  --accent: #38d9ff;
+  --accent-hover: #6ee2ff;
+  --accent-soft: #0e2b36;
+  --accent-ink: #04141b;
+
+  --ok: #4ade80;
+  --ok-soft: #10281c;
+  --warn: #fbbf24;
+  --warn-soft: #2b2210;
+  --danger: #ff6b7a;
+  --danger-soft: #2c1417;
+
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .34);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(120% 68% at 50% -12%,
+      color-mix(in srgb, var(--accent) 14%, transparent) 0%, transparent 62%),
+    var(--bg);
+  color: var(--text);
+  font: 13px/1.55 var(--font);
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Devanagari at 13px is hard to read; it needs a touch more size and leading. */
+:lang(hi), .hi { font-family: var(--font-hi); font-size: 1.04em; line-height: 1.7; }
+
+button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; }
+button:disabled { cursor: default; opacity: .5; }
+input, select { font: inherit; color: inherit; }
+
+:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* The one card primitive. Everything boxed uses this. */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--card-shadow);
+  min-width: 0;
+}
+
+.row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.col { display: flex; flex-direction: column; min-width: 0; }
+.grow { flex: 1; min-width: 0; }
+.muted { color: var(--muted); }
+.faint { color: var(--faint); }
+.mono { font-family: var(--font-mono); }
+.tiny { font-size: 11px; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Scrollbars, unobtrusive but present. */
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: var(--radius-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* Touch and pen users get a real target, same floor as the sibling app. */
+@media (pointer: coarse) {
+  button, input, select, .tap { min-height: 40px; }
+}
+
+/* Respect the system setting rather than deciding motion is always welcome. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}

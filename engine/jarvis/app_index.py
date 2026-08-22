@@ -139,10 +139,15 @@ class AppIndex:
         return self.entries
 
     def _scan_start_menu(self) -> list[AppEntry]:
+        # Both variables are Windows-only. `Path(os.environ.get("APPDATA", ""))`
+        # is `Path(".")` everywhere else, which resolves the glob below against
+        # the current working directory — harmless thanks to the `.exists()`
+        # guard, but it means the scan was quietly walking the wrong tree.
+        start_menu = "Microsoft/Windows/Start Menu/Programs"
         roots = [
-            Path(os.environ.get("ProgramData", r"C:\ProgramData"))
-            / "Microsoft/Windows/Start Menu/Programs",
-            Path(os.environ.get("APPDATA", "")) / "Microsoft/Windows/Start Menu/Programs",
+            Path(root) / start_menu
+            for root in (os.environ.get("ProgramData"), os.environ.get("APPDATA"))
+            if root
         ]
         found: list[AppEntry] = []
         for root in roots:

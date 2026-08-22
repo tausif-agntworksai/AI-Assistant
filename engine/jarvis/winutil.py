@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -125,13 +126,29 @@ def spawn(args: list[str], detached: bool = True) -> bool:
 
 
 def shell_open(target: str) -> bool:
-    """Open a file, folder, URL or shell: path with its default handler."""
-    try:
-        os.startfile(target)  # type: ignore[attr-defined]  # Windows-only
-        return True
-    except OSError as exc:
-        log.debug("os.startfile(%r) failed: %s; trying explorer", target, exc)
-        return spawn(["explorer.exe", target])
+    """Open a file, folder, URL or shell: path with its default handler.
+
+    The single busiest chokepoint in the engine — every website, file, folder,
+    settings page and WhatsApp chat goes through here, roughly fifteen of the
+    seventy-two skills.
+
+    `os.startfile` exists **only on Windows**, so off Windows this raised
+    `AttributeError`, which is not an `OSError` and so escaped the handler
+    below. Every one of those skills reported "That didn't work" from this one
+    line. Hence `getattr` rather than a bare call: the absence of the function
+    is a platform fact to branch on, not an error to catch.
+    """
+    startfile = getattr(os, "startfile", None)
+    if startfile is not None:
+        try:
+            startfile(target)
+            return True
+        except OSError as exc:
+            log.debug("os.startfile(%r) failed: %s; trying explorer", target, exc)
+            return spawn(["explorer.exe", target])
+
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    return spawn([opener, target], detached=False)
 
 
 def foreground_window() -> dict[str, Any]:

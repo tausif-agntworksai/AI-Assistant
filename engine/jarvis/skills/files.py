@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -15,6 +16,18 @@ log = logging.getLogger(__name__)
 
 HOME = Path.home()
 
+# Windows and macOS agree on every one of these except the video folder, which
+# macOS calls Movies. Both spellings are listed so either word finds it.
+VIDEOS = HOME / ("Movies" if sys.platform == "darwin" else "Videos")
+
+# Where the OS puts deleted files, and how to open it. A `shell:` path is
+# meaningless outside Explorer, so this is per-platform rather than one string.
+TRASH: Path = (
+    Path("shell:RecycleBinFolder") if sys.platform == "win32"
+    else HOME / ".Trash" if sys.platform == "darwin"
+    else HOME / ".local" / "share" / "Trash" / "files"
+)
+
 KNOWN_FOLDERS: dict[str, Path] = {
     "downloads": HOME / "Downloads",
     "download": HOME / "Downloads",
@@ -24,14 +37,17 @@ KNOWN_FOLDERS: dict[str, Path] = {
     "pictures": HOME / "Pictures",
     "photos": HOME / "Pictures",
     "music": HOME / "Music",
-    "videos": HOME / "Videos",
-    "video": HOME / "Videos",
+    "videos": VIDEOS,
+    "video": VIDEOS,
+    "movies": VIDEOS,
     "home": HOME,
-    "recycle bin": Path("shell:RecycleBinFolder"),
+    "recycle bin": TRASH,
+    "trash": TRASH,
+    "bin": TRASH,
 }
 
 SEARCH_ROOTS = [HOME / "Downloads", HOME / "Documents", HOME / "Desktop",
-                HOME / "Pictures", HOME / "Videos"]
+                HOME / "Pictures", VIDEOS]
 SEARCH_TIME_BUDGET = 6.0  # seconds — a voice reply that takes longer feels broken
 
 

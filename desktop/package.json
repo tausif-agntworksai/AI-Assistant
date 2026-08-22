@@ -3,27 +3,36 @@
   "productName": "Jarvis",
   "version": "0.1.0",
   "private": true,
-  "description": "Jarvis — a bilingual voice assistant for Windows.",
+  "description": "Jarvis \u2014 a bilingual voice assistant for Windows.",
   "author": "Jarvis",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && vite build",
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
     "icon": "electron scripts/make-icon.mjs",
     "env": "node scripts/make-app-env.mjs",
     "build:engine": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-engine.ps1",
     "shortcut": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/make-shortcut.ps1",
-    "dist": "npm run build && npm run icon && npm run env && npm run build:engine && electron-builder --win"
+    "dist": "npm run build && npm run icon && npm run env && npm run build:engine && electron-builder --win",
+    "build:main": "tsc",
+    "build:renderer": "vite build",
+    "dev:renderer": "vite"
   },
   "optionalDependencies": {
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
     "electron": "^43.2.0",
     "electron-builder": "^26.15.3",
-    "typescript": "^5.7.2"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
   },
   "build": {
     "appId": "ai.agntworks.jarvis",
@@ -34,7 +43,7 @@
     },
     "files": [
       "dist/**/*",
-      "renderer/**/*",
+      "renderer-dist/**/*",
       "assets/**/*",
       "package.json"
     ],
@@ -53,7 +62,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -66,5 +77,8 @@
       "shortcutName": "Jarvis",
       "license": "build/permissions.txt"
     }
+  },
+  "allowScripts": {
+    "esbuild@0.21.5": true
   }
 }

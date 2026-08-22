@@ -205,7 +205,8 @@ def cmd_doctor() -> int:
 
     print(f"\nJARVIS {__version__} — environment check\n" + "=" * 72)
 
-    print(f"\nPython {sys.version.split()[0]} ({sys.executable})")
+    print(f"\nPlatform {sys.platform}")
+    print(f"Python {sys.version.split()[0]} ({sys.executable})")
     if sys.version_info < (3, 11):
         line(fail, "python version", "3.11+ required")
         problems += 1
@@ -218,8 +219,12 @@ def cmd_doctor() -> int:
     line(ok if paths.ENV_FILE.exists() else warn, ".env",
          "found" if paths.ENV_FILE.exists() else "copy .env.example to .env")
 
+    # Required everywhere, then the ones that only exist on this platform.
+    # Reporting `win32api` as missing-and-fatal on a Mac would make --doctor
+    # impossible to pass there — and `scripts/build-engine` gates the whole
+    # build on its exit code, so that would have blocked every macOS build.
     print("\nDependencies")
-    for module, purpose in [
+    required = [
         ("sounddevice", "microphone capture"),
         ("numpy", "audio buffers"),
         ("onnxruntime", "wake word + VAD inference"),
@@ -231,10 +236,18 @@ def cmd_doctor() -> int:
         ("indic_transliteration", "Devanagari handling"),
         ("anthropic", "LLM brain"),
         ("psutil", "device status"),
-        ("win32api", "Windows control (pywin32)"),
-        ("comtypes", "audio session control"),
         ("fastapi", "HUD API"),
-    ]:
+    ]
+    if sys.platform == "win32":
+        required += [
+            ("win32api", "Windows control (pywin32)"),
+            ("comtypes", "audio session control"),
+            ("pycaw", "volume control"),
+        ]
+    elif sys.platform == "darwin":
+        required += [("Quartz", "macOS window control (pyobjc)")]
+
+    for module, purpose in required:
         try:
             __import__(module)
             line(ok, module, purpose)
@@ -323,12 +336,31 @@ def cmd_doctor() -> int:
         line(fail, "permissions", str(exc))
         problems += 1
 
-    print("\nSecrets")
-    line(ok if settings.brain.api_key else warn, "ANTHROPIC_API_KEY",
-         f"set (model {settings.brain.model})" if settings.brain.api_key
-         else "missing - rules still work, no conversation/Q&A")
-    line(ok if settings.stt.cloud_api_key else warn, "CLOUD_STT_API_KEY",
-         "set" if settings.stt.cloud_api_key else "not set - local speech only")
+    print("\nLanguage model")
+    try:
+        from . import llm
+
+        snapshot = llm.selection.snapshot()
+        source = "from .env" if snapshot["from_environment"] else "set in the app"
+        line(ok if snapshot["has_key"] else warn, "api key",
+             f"{source} — {snapshot['label']}, model {snapshot['model']}"
+             if snapshot["has_key"]
+             else "none yet. Rules still work; conversation and Q&A need a key")
+        line(ok, "providers", ", ".join(sorted(llm.PROVIDERS)))
+    except Exception as exc:  # noqa: BLE001
+        line(fail, "provider registry", str(exc))
+        problems += 1
+
+    try:
+        from .stt.selection import selection as speech
+
+        snapshot = speech.snapshot()
+        line(ok if snapshot["has_key"] else warn, "cloud speech",
+             f"{snapshot['label']} — used only when the local model comes back empty"
+             if snapshot["has_key"] else "off — local speech only")
+    except Exception as exc:  # noqa: BLE001
+        line(fail, "speech selection", str(exc))
+        problems += 1
 
     print("\n" + "=" * 72)
     if problems:

@@ -46,14 +46,7 @@ import {
   type Tokens,
   type TotpEnrollment,
 } from "./firebaseAuth";
-import { recordOwnAccessRequest } from "./accessRequests";
-import {
-  OFFLINE_GRACE_MS,
-  firebaseConfigured,
-  isAdminEmail,
-  requireAuth,
-  twoFactorEnabled,
-} from "../config";
+import { OFFLINE_GRACE_MS, firebaseConfigured, requireAuth } from "../config";
 
 /** Every screen the sign-in flow can be on. The HUD renders one per value. */
 export type GateState =
@@ -61,8 +54,6 @@ export type GateState =
   | "unconfigured"
   | "signed-out"
   | "needs-verification"
-  | "needs-approval"
-  | "rejected"
   | "needs-2fa"
   | "offline-expired"
   | "ready";
@@ -71,7 +62,6 @@ export interface AuthStatus {
   state: GateState;
   email: string;
   uid: string;
-  isAdmin: boolean;
   /** True when the last check reached Firebase rather than the cached session. */
   online: boolean;
   /**
@@ -119,7 +109,6 @@ export class SessionManager extends EventEmitter {
       state: this.state,
       email: this.claims?.email ?? this.stored?.email ?? "",
       uid: this.claims?.uid ?? this.stored?.uid ?? "",
-      isAdmin: Boolean(this.claims?.admin) || isAdminEmail(this.claims?.email),
       online: this.online,
       codeReason:
         this.state !== "needs-2fa" ? null : this.challenge ? "sign-in" : "enroll",
@@ -231,60 +220,21 @@ export class SessionManager extends EventEmitter {
       return;
     }
 
-    // Remember the session from here on, not only once the gate opens. Someone
-    // waiting on approval shouldn't have to sign in again to press "check
-    // again" tomorrow — and a stored session still passes through every check
-    // below on the next launch.
+    // Remember the session from here on, not only once the gate opens — someone
+    // who quits midway through enrolling an authenticator shouldn't have to
+    // start from the password again. A stored session still passes through
+    // every check above and below on the next launch.
     this.persist(token, email);
 
-    const admin = Boolean(this.claims?.admin) || isAdminEmail(email);
-    if (!admin) {
-      const approved = await this.checkApproval(token.idToken, email);
-      if (approved === "rejected") {
-        this.setState("rejected");
-        return;
-      }
-      if (approved !== "approved") {
-        this.setState("needs-approval");
-        return;
-      }
-    }
-
-    if (twoFactorEnabled && !this.hasSecondFactor) {
+    // The authenticator is not optional. This is the whole gate now that
+    // nobody is waiting on an administrator: a password alone is one leak away
+    // from someone else's machine and someone else's API key.
+    if (!this.hasSecondFactor) {
       this.setState("needs-2fa");
       return;
     }
 
     this.setState("ready");
-  }
-
-  /**
-   * Approval status, claim first and Firestore second.
-   *
-   * The `approved` custom claim is authoritative — only a credentialed backend
-   * can set it — but it only lands on a *newly minted* token, so someone
-   * approved five minutes ago still carries the old one. Firestore has the
-   * live answer, and a fresh refresh then picks the claim up properly.
-   */
-  private async checkApproval(
-    idToken: string,
-    email: string
-  ): Promise<"approved" | "pending" | "rejected" | "unknown"> {
-    if (this.claims?.approved) return "approved";
-
-    const filed = await recordOwnAccessRequest(this.claims?.uid ?? "", email, idToken);
-    if (filed === "approved") {
-      // Firestore says yes but our token predates the decision. Mint a new one
-      // so the claim is there for everything downstream.
-      try {
-        this.tokens = await refresh(this.tokens!.refreshToken);
-        this.claims = readClaims(this.tokens.idToken);
-      } catch {
-        /* the Firestore answer still stands for this session */
-      }
-      return "approved";
-    }
-    return filed ?? "unknown";
   }
 
   /* ── sign-in flow ─────────────────────────────────────────────────────── */

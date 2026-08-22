@@ -133,6 +133,58 @@ class CloudTranscriber(Transcriber):
         return alternative.get("transcript", ""), channel.get("detected_language", "")
 
 
+class LazyCloudTranscriber(Transcriber):
+    """A cloud transcriber that reads the current selection on every call.
+
+    The key arrives from the desktop app at runtime and can change while the
+    engine is running. Baking it into a constructor would mean rebuilding the
+    whole transcriber — and therefore reloading two Whisper models — every time
+    someone edited a setting. So the wrapper is always in place and simply has
+    nothing to do until a key exists.
+    """
+
+    name = "cloud"
+
+    def __init__(self) -> None:
+        self._cached: tuple[str, str, CloudTranscriber] | None = None
+
+    def _backend(self) -> CloudTranscriber | None:
+        from .selection import selection
+
+        if not selection.available:
+            return None
+        provider, key = selection.active_provider, selection.api_key
+        if self._cached and self._cached[0] == provider and self._cached[1] == key:
+            return self._cached[2]
+        try:
+            backend = CloudTranscriber(provider, key)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Cloud speech unavailable (%s)", exc)
+            return None
+        self._cached = (provider, key, backend)
+        return backend
+
+    @property
+    def available(self) -> bool:
+        from .selection import selection
+
+        return selection.available
+
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 16000,
+        *,
+        short_answer: bool = False,
+        hint: str | None = None,
+    ) -> Transcript:
+        backend = self._backend()
+        if backend is None:
+            return Transcript(text="", backend="cloud:off")
+        return backend.transcribe(audio, sample_rate,
+                                  short_answer=short_answer, hint=hint)
+
+
 class FallbackTranscriber(Transcriber):
     """Local recognition, with a cloud retry when the local pass comes back empty.
 

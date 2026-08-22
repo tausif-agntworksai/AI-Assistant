@@ -36,7 +36,7 @@ reconnect freely.
 ```
 
 The microphone is the thing sign-in protects. The engine boots with its
-listening loop shut and opens it only when the app says a verified, approved
+listening loop shut and opens it only when the app says a verified, signed-in
 person is present — so the login screen is not a page you click past, it is
 what decides whether the machine is listening at all.
 
@@ -85,6 +85,58 @@ a confident Whisper label, including the languages Hindi gets mistaken for;
 then distinctive English words; and finally the language the conversation was
 already in, so `“aur battery?”` doesn't reset to English. Claude is told the
 answer explicitly rather than left to infer it from words that look like both.
+
+---
+
+## Bringing your own model
+
+The installer ships **no API key**. That is the point of it being an installer:
+a key baked into something you hand to strangers is both extractable and billed
+to whoever built it. So Jarvis is useful the moment it starts, and asks for a
+key only when something actually needs one.
+
+```
+  "chrome kholo" · "volume 40" · "screenshot lo" · "battery kitni hai"
+      └─ offline rules, no key, no network, no cost
+
+  "explain quantum computing" · "translate this" · anything phrased oddly
+      └─ needs a model, and therefore a key
+```
+
+The first time an utterance needs the model and no key is set, Jarvis says so
+out loud and opens settings — rather than going quiet and leaving you to guess
+whether it heard you.
+
+Six providers, and you pick the **model** as well as the provider:
+
+| Provider | Why you might pick it |
+|---|---|
+| Anthropic (Claude) | What the prompts and tool-use were built against |
+| Groq | Answers in a couple of hundred milliseconds — the difference between a conversation and a progress bar |
+| OpenAI, Gemini, DeepSeek, Mistral | Whatever you already have a key for |
+
+Model choice matters more here than in a chat app: a spoken reply that takes
+six seconds feels broken even when it is correct, so every model in the list
+carries a *fastest / balanced / most capable* badge and you can trade depth for
+latency deliberately.
+
+**Where the key lives.** In the desktop app, encrypted with your own Windows
+account's key (DPAPI, via Electron `safeStorage`) — not in `localStorage`, and
+never in a page. The renderer can set a key and ask whether one exists; there
+is no call that reads one back. It is lent to the engine in memory for as long
+as it runs, written to no file and stripped from every log line. A key is
+verified against the provider *before* it is saved, so a typo fails at the
+settings screen rather than on your first question.
+
+### Speech recognition, optionally
+
+Speech stays on this machine by default. Hindi mixed with English is the
+hardest case for the local model, and a cloud recogniser is noticeably better
+at it — Deepgram's `nova-3` is built for exactly that — so you can add one as a
+fallback in the same panel. The behaviour is narrow and the panel says so:
+**audio only leaves the machine after both local passes have already failed to
+make sense of it.** A command the rules recognise never reaches a network, and
+neither does one the local model transcribes cleanly.
 
 ---
 
@@ -143,9 +195,12 @@ cd engine
 powershell -ExecutionPolicy Bypass -File setup.ps1     # venv + dependencies
 ```
 
-Add your Anthropic API key to `engine\.env` — everything works without it
-except conversation, questions, translation and the fallback that understands
-unusual phrasings:
+Nothing else is required to start. Around fifty commands — opening apps,
+volume, brightness, timers, battery, screenshots — are matched by offline rules
+and need no API key at all. Conversation, questions and translation do, and
+you add that **in the app** rather than in a file (see *Bringing your own
+model* below). For a command-line-only setup you can still put one in
+`engine\.env`:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
@@ -210,25 +265,25 @@ Run the tests with `python -m pytest` from `engine\`.
 ## Signing in
 
 If `desktop\.env` names a Firebase project, Jarvis will not open the
-microphone until someone with a verified, admin-approved account is signed in.
-The gate is the same one the AI Calculator enforces, in the same order:
+microphone until someone is signed in. Accounts are **self-serve** — there is
+no approval queue and no administrator:
 
 ```
-sign in → verified email → admin approval → [authenticator app] → microphone opens
+sign up → verify your email → set up an authenticator → microphone opens
 ```
 
-Point it at the same Firebase project as the AI Calculator and one account
-covers both: approving someone from the calculator's **Manage access**
-dashboard sets the `approved` custom claim, which Jarvis reads out of the ID
-token. There is no server here to write that claim, so Jarvis files its own
-pending request straight into Firestore — safe because `firestore.rules` runs
-on Google's servers and lets you create only a *pending* request, only for
-your own uid, only with your own verified email.
+The authenticator is not optional. Once nobody is vetting new accounts, a
+password on its own is one leak away from someone else's machine and someone
+else's API key, so enrolling a TOTP app (Google Authenticator, Authy,
+1Password) is part of signing up rather than a setting. That needs Firebase
+Authentication with Identity Platform, which needs the **Blaze** plan — no
+per-use charge at this volume, but a billing account has to be attached.
 
 Copy `desktop\.env.example` to `desktop\.env` and fill in the web app config
 from Firebase console → Project settings → Your apps. Leave it blank and
 Jarvis runs unlocked and says so on screen, rather than showing a sign-in
-prompt that couldn't succeed.
+prompt that couldn't succeed. `JARVIS_REQUIRE_AUTH=false` keeps the screens but
+stops them gating the assistant — for local development, not for shipping.
 
 Where the security actually is:
 
@@ -462,11 +517,13 @@ engine/
 desktop/
   src/main.ts           windows, tray, hotkey, and which screen you're on
   src/engine.ts         spawns and supervises the Python engine
-  src/config.ts         the Firebase project and the admin allowlist
+  src/config.ts         the Firebase project and what the gate enforces
   src/consent.ts        the capability manifest and its store
+  src/llmKeys.ts        the user's API keys, encrypted with the OS keychain
   src/auth/             Firebase over REST, and the session that gates the mic
-  renderer/auth.html    sign in, verify, wait for approval, enrol 2FA
-  renderer/consent.html the first-run permission screen
-  renderer/index.html   the HUD
+  renderer-src/         the React app: three entry points, one design system
+    src/theme.css       one token vocabulary, light and dark
+    src/screens/        Hud, Auth, Consent, Settings
+    src/useEngine.ts    the WebSocket, the reconnect loop, the event reducer
   build/permissions.txt shown by the installer, before anything is installed
 ```

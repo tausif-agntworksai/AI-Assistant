@@ -1,0 +1,26 @@
+{
+  "//": [
+    "Separate from desktop/tsconfig.json on purpose. That one emits CommonJS",
+    "into dist/ for the Electron main process; this one only type-checks JSX",
+    "for a bundler that does its own transpiling. Merging them would force one",
+    "module system on both halves of the app."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "useDefineForClassFields": true
+  },
+  "include": ["src", "vite-env.d.ts"]
+}

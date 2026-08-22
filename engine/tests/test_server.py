@@ -221,6 +221,97 @@ def test_audit_endpoint_responds(client):
     assert isinstance(client.get("/audit?limit=5").json()["entries"], list)
 
 
+# --- bring-your-own-key ----------------------------------------------------
+
+
+@pytest.fixture
+def llm_selection():
+    """Restores the process-wide model selection after a test changes it."""
+    from jarvis import llm
+
+    before = (llm.selection.provider_id, llm.selection.model, llm.selection._api_key)
+    yield llm.selection
+    llm.selection.provider_id, llm.selection.model, llm.selection._api_key = before
+
+
+def test_the_settings_screen_can_read_what_it_needs(client):
+    body = client.get("/llm").json()
+    assert {p["id"] for p in body["providers"]} == {
+        "anthropic", "openai", "gemini", "groq", "deepseek", "mistral"
+    }
+    assert {p["id"] for p in body["speech_providers"]} == {"deepgram", "openai"}
+    assert "has_key" in body["selected"]
+
+
+def test_a_key_can_be_set_and_is_never_read_back(client, llm_selection):
+    secret = "sk-ant-do-not-echo-this-anywhere"
+    response = client.post("/llm", json={
+        "provider": "anthropic", "model": "claude-sonnet-5", "api_key": secret,
+    })
+    assert response.status_code == 200
+    assert response.json()["has_key"] is True
+
+    # Not in this response, and not in any other endpoint either.
+    for route in ("/llm", "/status"):
+        assert secret not in client.get(route).text, route
+
+
+def test_an_unknown_provider_is_refused_rather_than_swapped(client, llm_selection):
+    """Falling back to a default would hand this key to a provider the user
+    never chose."""
+    response = client.post("/llm", json={
+        "provider": "not-a-real-provider", "api_key": "gsk_something",
+    })
+    assert response.status_code == 400
+    assert "don't know that AI provider" in response.json()["error"]
+    assert llm_selection.provider_id != "not-a-real-provider"
+
+
+def test_omitting_the_key_keeps_the_one_already_set(client, llm_selection):
+    """Switching model shouldn't make the user paste their key again."""
+    client.post("/llm", json={"provider": "groq", "api_key": "gsk_kept"})
+    client.post("/llm", json={"provider": "groq", "model": "llama-3.1-8b-instant"})
+    assert llm_selection.snapshot()["has_key"] is True
+    assert llm_selection.active_model == "llama-3.1-8b-instant"
+
+
+def test_an_empty_key_forgets_it(client, llm_selection, monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    client.post("/llm", json={"provider": "groq", "api_key": "gsk_temporary"})
+    client.post("/llm", json={"provider": "groq", "api_key": ""})
+    assert llm_selection.snapshot()["has_key"] is False
+
+
+def test_key_checks_are_rate_limited(client):
+    """An unlimited "is this key good?" endpoint is a free oracle for testing
+    stolen keys, and any process on this machine with the token can reach it."""
+    from jarvis.server import VALIDATE_LIMIT
+
+    statuses = {
+        client.post("/llm/validate",
+                    json={"provider": "groq", "api_key": f"gsk_{n:040d}"}).status_code
+        for n in range(VALIDATE_LIMIT.max_calls + 4)
+    }
+    assert 429 in statuses
+    VALIDATE_LIMIT._count = 0  # don't leak exhaustion into other tests
+
+
+def test_the_speech_recogniser_is_off_until_a_key_is_given(client):
+    from jarvis.stt.selection import selection as speech
+
+    try:
+        assert client.post("/speech", json={"provider": "deepgram",
+                                            "api_key": "dg-key"}).json()["has_key"]
+        assert client.post("/speech", json={"provider": ""}).json()["has_key"] is False
+    finally:
+        speech.clear()
+
+
+def test_an_unknown_speech_provider_is_refused(client):
+    assert client.post("/speech", json={"provider": "nonesuch",
+                                        "api_key": "k"}).status_code == 400
+
+
 # --- the websocket ---------------------------------------------------------
 
 

@@ -1,0 +1,169 @@
+/* The HUD. Frameless, small, always on top — so density matters. */
+
+.hud { position: relative; display: flex; flex-direction: column; height: 100%; }
+
+.dot {
+  -webkit-app-region: no-drag;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--faint);
+  flex: 0 0 auto;
+  margin-right: 2px;
+}
+.dot.ready { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.dot.starting { background: var(--warn); animation: dot-blink 1.1s steps(2, end) infinite; }
+@keyframes dot-blink { 50% { opacity: .25; } }
+
+/* ---- the orb stage ---- */
+.stage {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 0 12px;
+}
+.state-label {
+  margin-top: 11px;
+  font-size: 10.5px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  min-height: 15px;
+  text-align: center;
+}
+
+.hud-alert { padding: 0 12px 9px; }
+
+/* ---- tabs ---- */
+.hud-tabs {
+  margin: 0 12px 0;
+  border-radius: var(--radius-sm);
+  flex: 0 0 auto;
+}
+
+/* ---- main ---- */
+.hud-main {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 10px 12px;
+  user-select: text;
+  min-height: 0;
+}
+
+.empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 26px 10px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.empty kbd {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+}
+
+/* ---- conversation ---- */
+.chat { display: flex; flex-direction: column; gap: 9px; }
+.msg { display: flex; gap: 8px; align-items: flex-start; animation: msg-in .18s var(--ease); }
+@keyframes msg-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+
+.msg .who {
+  flex: 0 0 38px;
+  font-size: 9.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding-top: 4px;
+}
+.msg .body {
+  flex: 1;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  word-break: break-word;
+  min-width: 0;
+}
+.msg.you .body { background: var(--panel-2); }
+.msg.jarvis .body { border-color: color-mix(in srgb, var(--accent) 34%, var(--line)); }
+.msg.action .body {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.msg.error .body { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+.msg.confirm .body { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
+
+.msg .lang {
+  font-size: 9.5px;
+  color: var(--faint);
+  margin-left: 6px;
+  letter-spacing: .06em;
+}
+
+/* ---- skills ---- */
+.skills { display: flex; flex-direction: column; gap: 12px; }
+.cat h3 {
+  font-size: 10px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 5px;
+}
+.skill {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 5px 7px;
+  border-radius: 6px;
+  transition: background var(--fast) var(--ease);
+}
+.skill:hover { background: var(--panel); }
+.skill .ex { color: var(--muted); font-size: 11.5px; min-width: 0; }
+
+/* ---- activity ---- */
+.activity { display: flex; flex-direction: column; }
+.activity .row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 11.5px;
+}
+.activity .time { color: var(--faint); flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.activity .what { flex: 1; font-family: var(--font-mono); min-width: 0; }
+.activity .res { flex: 0 0 auto; font-size: 10px; font-weight: 600; }
+.activity .res.ok { color: var(--ok); }
+.activity .res.no { color: var(--danger); }
+.activity .res.blocked { color: var(--warn); }
+
+/* ---- footer ---- */
+.hud-foot {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--line);
+  padding: 9px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  background: var(--panel);
+}
+.composer { display: flex; gap: 7px; }
+.composer input { flex: 1; min-width: 0; }
+
+.hint {
+  font-size: 10.5px;
+  color: var(--faint);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.hint b { color: var(--muted); font-weight: 600; }
+.hint .who { margin-left: auto; max-width: 45%; text-align: right; }

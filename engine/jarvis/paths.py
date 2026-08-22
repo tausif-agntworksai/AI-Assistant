@@ -25,11 +25,24 @@ ENGINE_DIR: Path = (
 
 PROJECT_DIR: Path = ENGINE_DIR.parent
 
-# Writable runtime root. %LOCALAPPDATA%\Jarvis on Windows.
-DATA_DIR: Path = Path(
-    os.environ.get("JARVIS_DATA_DIR")
-    or (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Jarvis")
-)
+
+def _default_data_dir() -> Path:
+    """Where this OS expects an application to keep its own data.
+
+    Falling back to `Path.home() / "Jarvis"` when `LOCALAPPDATA` is unset —
+    which is every non-Windows machine — would have dropped a bare `~/Jarvis`
+    into the user's home directory and left the models there.
+    """
+    if sys.platform == "win32":
+        return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Jarvis"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Jarvis"
+    # Linux and the rest: the XDG base directory spec.
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "jarvis"
+
+
+# Writable runtime root. Overridable for tests via JARVIS_DATA_DIR.
+DATA_DIR: Path = Path(os.environ.get("JARVIS_DATA_DIR") or _default_data_dir())
 
 MODELS_DIR: Path = DATA_DIR / "models"
 LOGS_DIR: Path = DATA_DIR / "logs"

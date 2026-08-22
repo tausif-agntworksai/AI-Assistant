@@ -260,6 +260,59 @@ export class Engine {
     await this.call("/consent", { granted });
   }
 
+  /**
+   * Lends the engine the user's model key for as long as it runs.
+   *
+   * "Lends" is the accurate word: the engine holds it in memory and writes it
+   * nowhere. This process is where it actually lives, encrypted by the OS.
+   */
+  async pushLlm(provider: string, model: string, apiKey: string): Promise<void> {
+    await this.call("/llm", { provider, model, api_key: apiKey });
+  }
+
+  async pushSpeech(provider: string, apiKey: string): Promise<void> {
+    await this.call("/speech", { provider, api_key: apiKey });
+  }
+
+  /** What the settings screen renders: providers, models, current choice. */
+  async llmInfo<T>(): Promise<T> {
+    return this.call<T>("/llm");
+  }
+
+  /**
+   * Proves a key works before it is saved. The engine makes the live call, so
+   * the key travels main → loopback → provider and never through a page.
+   */
+  async validateKey(provider: string, apiKey: string, model = ""): Promise<void> {
+    const response = await fetch(`${this.url}/llm/validate`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ provider, api_key: apiKey, model }),
+    });
+    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    if (!response.ok) throw new Error(body.error ?? "That key could not be verified.");
+  }
+
+  async listModels(provider: string, apiKey: string): Promise<unknown[]> {
+    const response = await fetch(`${this.url}/llm/models`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ provider, api_key: apiKey }),
+    });
+    const body = (await response.json().catch(() => ({}))) as {
+      models?: unknown[];
+      error?: string;
+    };
+    if (!response.ok) throw new Error(body.error ?? "Could not list models.");
+    return body.models ?? [];
+  }
+
   private write(text: string): void {
     // The token isn't key-shaped, so scrub it by value as well.
     const safe = redactSecrets(text).split(this.apiToken).join("[redacted]");

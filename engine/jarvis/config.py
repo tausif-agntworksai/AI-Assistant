@@ -92,19 +92,19 @@ class TtsConfig(BaseModel):
 
 class BrainConfig(BaseModel):
     enabled: bool = True
-    model: str = "claude-opus-5"
+    # Which provider to start with, and which of its models. The user's own
+    # choice — pushed down by the desktop app's settings screen — overrides
+    # both; these are only the defaults for a fresh install or a bare
+    # `python -m jarvis`. An empty model means "whatever that provider's
+    # default is", so changing provider doesn't require changing both.
+    provider: Literal["anthropic", "openai", "gemini", "groq", "deepseek", "mistral"] = (
+        "anthropic"
+    )
+    model: str = ""
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
     max_tokens: int = 2048
     rules_threshold: int = 78
     history_turns: int = 6
-
-    @property
-    def api_key(self) -> str:
-        return os.environ.get("ANTHROPIC_API_KEY", "").strip()
-
-    @property
-    def available(self) -> bool:
-        return self.enabled and bool(self.api_key)
 
 
 class PermissionsConfig(BaseModel):
@@ -116,6 +116,22 @@ class PermissionsConfig(BaseModel):
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8756
+
+    @property
+    def bind_port(self) -> int:
+        """The port to actually listen on.
+
+        The desktop app scans for a free one and passes it in `JARVIS_PORT`,
+        because 8756 may already be taken by something else — and nothing here
+        read it. The app would then poll the port it chose while the engine sat
+        on the one from config.yaml, and give up fifteen minutes later with
+        "The engine did not respond in time." An occupied port is not a rare
+        situation on a machine you are handing software to.
+        """
+        raw = os.environ.get("JARVIS_PORT", "").strip()
+        if raw.isdigit() and 1 <= int(raw) <= 65535:
+            return int(raw)
+        return self.port
 
 
 class SecurityConfig(BaseModel):

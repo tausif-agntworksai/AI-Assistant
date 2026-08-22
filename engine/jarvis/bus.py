@@ -46,6 +46,10 @@ class Event(str, Enum):
     ERROR = "error"
     LOG = "log"
     LEVEL = "level"  # live mic amplitude, for the HUD waveform
+    #: Something needed the language model and no key has been set. The HUD
+    #: opens settings on this rather than making the user work out why a
+    #: question went unanswered.
+    NEEDS_KEY = "needs_key"
 
 
 class EventBus:

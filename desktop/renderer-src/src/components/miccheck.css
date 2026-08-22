@@ -1,0 +1,38 @@
+.miccheck {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0 4px;
+}
+.miccheck > .note { width: 100%; }
+
+.miccheck-meter {
+  width: 190px;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.miccheck-meter i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--accent) 45%, transparent), var(--accent));
+  transition: width .08s linear;
+}
+
+.miccheck-heard {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  user-select: text;
+}

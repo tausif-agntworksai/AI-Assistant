@@ -41,6 +41,21 @@ hiddenimports += [
         "display", "device", "files", "productivity", "messaging", "knowledge",
     )
 ]
+# The model providers are built inside `_build_registry()` rather than imported
+# at module scope, so static analysis misses them too. Without these the frozen
+# build starts fine and then fails on the first question with
+# "No module named jarvis.llm.anthropic_provider".
+hiddenimports += [
+    f"jarvis.llm.{name}"
+    for name in ("base", "anthropic_provider", "gemini_provider", "openai_compatible")
+]
+
+# Speech backends, same reason: chosen at runtime from config or a pushed key.
+hiddenimports += [
+    "jarvis.stt.local_whisper", "jarvis.stt.cloud", "jarvis.stt.tiered",
+    "jarvis.stt.selection", "jarvis.tts.edge", "jarvis.tts.sapi",
+]
+
 hiddenimports += [
     "win32com.client", "pythoncom", "pywintypes", "win32gui", "win32process",
     "win32api", "win32con", "wmi", "uvicorn.logging", "uvicorn.loops.auto",
