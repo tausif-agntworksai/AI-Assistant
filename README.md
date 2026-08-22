@@ -47,7 +47,7 @@ transcription, no storage, no network.
 ### The listening loop
 
 ```
-IDLE ──"hey jarvis" | Ctrl+Alt+J | click the orb──▶ LISTENING
+IDLE ──"hey jarvis" | Ctrl+Alt+J | click the orb──▶ ACK ──▶ LISTENING
 LISTENING ──trailing silence──▶ THINKING ──▶ ACTING ──▶ SPEAKING ──▶ IDLE
                                      │                        │
                      rules match? ───┴─── no ──▶ Claude       └──▶ FOLLOW-UP
@@ -61,6 +61,15 @@ don't recognise go to Claude.
 For six seconds after it finishes speaking, Jarvis keeps listening without the
 wake word, so a correction (`“nahi, chrome”`) or a second command lands
 straight away.
+
+**The wake word answers back.** A short `“Yes?”` — or `“हाँ?”` if the last turn
+was Hindi — so you know you were heard rather than saying it twice. Latency is
+the whole constraint here: a cue that arrives 400 ms late lands on top of your
+first word, so nothing is synthesised at wake time. The spoken cues are
+rendered once in the background and cached; until they are ready, and whenever
+the network is not, a 140 ms rising chime generated with numpy covers for them.
+Set `wake_word.acknowledge` to `chime` if you would rather have the shorter cue
+(it overlaps less of what you say next), or `none` for silence.
 
 ### Understanding two languages at once
 

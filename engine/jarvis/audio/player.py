@@ -27,13 +27,37 @@ class AudioPlayer:
         self._finished.set()
         self._lock = threading.Lock()
         self.interrupted = False
+        self._earcon = False
 
     @property
     def is_playing(self) -> bool:
         return not self._finished.is_set()
 
-    def play_async(self, audio: np.ndarray, sample_rate: int) -> None:
-        """Start playback and return immediately."""
+    @property
+    def is_earcon(self) -> bool:
+        """True while the thing playing is a short cue rather than a reply.
+
+        The listen loop treats these completely differently. A reply that is
+        playing can be barged in on and cut off; an acknowledgement is a tenth
+        of a second long and exists precisely so the user speaks *next*, so
+        cutting it off, or reading it as the assistant talking over itself,
+        would both be wrong.
+        """
+        return self._earcon and self.is_playing
+
+    def play_earcon(self, audio: np.ndarray, sample_rate: int) -> None:
+        """Play a short cue. Non-blocking, and not subject to barge-in."""
+        self.play_async(audio, sample_rate, earcon=True)
+
+    def play_async(
+        self, audio: np.ndarray, sample_rate: int, earcon: bool = False
+    ) -> None:
+        """Start playback and return immediately.
+
+        `earcon` is set inside the lock, before the stream starts. Setting it
+        afterwards left a window — small, but the listen loop runs every 32 ms —
+        in which a cue looked like a reply and got cut off as barge-in.
+        """
         import sounddevice as sd
 
         self.stop()
@@ -45,6 +69,7 @@ class AudioPlayer:
             self._stop_flag.clear()
             self._finished.clear()
             self.interrupted = False
+            self._earcon = earcon
             position = 0
 
             def callback(outdata, frames, time_info, status):  # noqa: ANN001

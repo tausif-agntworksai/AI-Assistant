@@ -16,6 +16,11 @@ wake_word:
   model: hey_jarvis        # openWakeWord pretrained: hey_jarvis, alexa, hey_mycroft
   threshold: 0.5           # lower = more sensitive; raise toward 0.7 if it self-triggers
   cooldown_sec: 2.0        # ignore re-triggers for this long after a detection
+  # What you hear when the wake word fires, so you know you were heard rather
+  # than saying it again. voice = a short spoken "Yes?" / "जी?" in the language
+  # of the last turn; chime = a 140 ms rising blip, instant and never overlaps
+  # your next words; none = silence.
+  acknowledge: voice       # voice | chime | none
 
 vad:
   backend: silero          # silero | energy

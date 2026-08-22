@@ -28,6 +28,15 @@ class WakeWordConfig(BaseModel):
     model: str = "hey_jarvis"
     threshold: float = 0.5
     cooldown_sec: float = 2.0
+    # What you hear when the wake word fires. Without any acknowledgement there
+    # is no way to know you were heard, so people say it twice.
+    #   voice — a short spoken cue ("Yes?" / "जी?"), matched to the language of
+    #           the last turn. Rendered in the background and cached; falls back
+    #           to the chime until it is ready or if the network is unavailable.
+    #   chime — a 140 ms rising two-note blip. Always available, never overlaps
+    #           what you say next, and language-neutral.
+    #   none  — silence, as it was before.
+    acknowledge: Literal["voice", "chime", "none"] = "voice"
 
 
 class VadConfig(BaseModel):

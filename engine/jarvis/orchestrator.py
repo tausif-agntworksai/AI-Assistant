@@ -34,6 +34,7 @@ import numpy as np
 from . import winutil
 from .announce import set_handler as set_announce_handler
 from .audio.capture import AudioCapture, FrameAccumulator, RingBuffer, rms_level
+from .audio.earcon import Acknowledger
 from .audio.enhance import is_too_quiet
 from .audio.player import AudioPlayer
 from .audio.vad import SegmentResult, SpeechSegmenter, create_vad
@@ -87,6 +88,9 @@ class Orchestrator:
         self.wake = None
         self.vad = None
         self.segmenter: SpeechSegmenter | None = None
+        self.acknowledger = Acknowledger(
+            self.player, settings.wake_word.acknowledge
+        )
 
         self._thread: threading.Thread | None = None
         self._running = threading.Event()
@@ -116,6 +120,9 @@ class Orchestrator:
         restore_timers()
 
         self.speaker = create_speaker(self.cfg.tts, player=self.player)
+        # Renders in the background: the chime covers every wake word until
+        # the spoken cues are ready, so nothing waits on this.
+        self.acknowledger.prepare()
         set_announce_handler(self._on_announcement)
         gate.set_confirmer(self._confirm_by_voice if with_audio else self._confirm_headless)
 
@@ -309,6 +316,13 @@ class Orchestrator:
                 self._recent_peak = max(self._recent_peak * 0.995, level)
                 bus.publish(Event.LEVEL, level=level)
 
+            # Our own acknowledgement is playing. Drop these frames rather
+            # than transcribe them: the cue is the assistant's voice, not
+            # the user's, and it would otherwise arrive at Whisper glued to
+            # the front of the command as "Yes? chrome kholo".
+            if self.player.is_earcon:
+                continue
+
             # Barge-in: the wake word cuts off a reply that's still playing.
             if self.player.is_playing:
                 if listening:
@@ -396,8 +410,15 @@ class Orchestrator:
         bus.set_state(State.LISTENING, follow_up=follow_up)
 
     def _acknowledge(self) -> None:
-        """A short cue so the user knows the wake word landed."""
+        """Tell the user, out loud, that the wake word landed.
+
+        This used to be a log line and nothing else. The orb changed colour,
+        which is no use at all when the window is hidden in the tray — so
+        there was no way to tell whether you had been heard, and the natural
+        response is to say it again.
+        """
         bus.publish(Event.LOG, message="wake word detected")
+        self.acknowledger.play(self.last_language)
 
     def _open_followup(self) -> None:
         """Arm the follow-up so the listen loop picks it up on its next block.
