@@ -29,7 +29,7 @@ from .base import (
     Provider,
     ToolCall,
     check_key_shape,
-    friendly_key_error,
+    classify,
     pretty_model_name,
     speed_for,
 )
@@ -37,11 +37,25 @@ from .base import (
 log = logging.getLogger(__name__)
 
 BASE = "https://generativelanguage.googleapis.com/v1beta"
-DEFAULT_MODEL = "gemini-2.5-flash"
+
+# Models that advertise generateContent but are not conversational: image,
+# music, robotics and retrieval endpoints. Offering them in a voice assistant's
+# model picker would be offering a choice that cannot work.
+_NOT_CHAT = (
+    "embedding", "aqa", "imagen", "veo", "tts", "image", "lyria",
+    "nano-banana", "robotics", "vision-", "learnlm",
+)
+# An alias rather than a pinned version, deliberately. `gemini-2.5-flash` was
+# hardcoded here and Google has since stopped serving it to new keys — "This
+# model is no longer available to new users" — so a perfectly good key was
+# rejected with what looked like a key problem. Pinned model ids rot; the
+# `-latest` aliases are Google's answer to that and cost nothing to prefer.
+DEFAULT_MODEL = "gemini-flash-latest"
 
 KNOWN_MODELS: tuple[ModelInfo, ...] = (
-    ModelInfo("gemini-2.5-flash", "Gemini 2.5 Flash", "fastest"),
-    ModelInfo("gemini-2.5-pro", "Gemini 2.5 Pro", "most capable"),
+    ModelInfo("gemini-flash-lite-latest", "Gemini Flash-Lite (latest)", "fastest"),
+    ModelInfo("gemini-flash-latest", "Gemini Flash (latest)", "balanced"),
+    ModelInfo("gemini-pro-latest", "Gemini Pro (latest)", "most capable"),
 )
 
 # Keywords Gemini's schema dialect accepts. Anything else — `additionalProperties`,
@@ -65,12 +79,13 @@ def _request(method: str, path: str, api_key: str, body: Any, timeout: int) -> d
             json=body, timeout=timeout,
         )
     except requests.RequestException as exc:
-        raise LlmError(str(exc), "Couldn't reach Gemini.") from exc
+        raise LlmError(str(exc), "Couldn't reach Gemini.", "network") from exc
 
     if response.status_code >= 400:
+        kind, friendly = classify(response.status_code, response.text)
         raise LlmError(
             f"gemini HTTP {response.status_code}: {response.text[:400]}",
-            friendly_key_error(response.status_code, response.text),
+            friendly, kind,
         )
     try:
         return response.json()
@@ -128,22 +143,12 @@ def _to_gemini_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def validate_key(api_key: str) -> None:
-    _request(
-        "POST", f"/models/{DEFAULT_MODEL}:generateContent", api_key,
-        {
-            "contents": [{"role": "user", "parts": [{"text": "ping"}]}],
-            "generationConfig": {"maxOutputTokens": 8},
-        },
-        VALIDATE_TIMEOUT,
-    )
+    """Prove the key works, without depending on any one model existing."""
+    _request("GET", "/models?pageSize=1", api_key, None, VALIDATE_TIMEOUT)
 
 
 def list_models(api_key: str) -> list[ModelInfo]:
-    try:
-        payload = _request("GET", "/models?pageSize=200", api_key, None, VALIDATE_TIMEOUT)
-    except LlmError as exc:
-        log.info("Could not list Gemini models (%s)", exc)
-        return list(KNOWN_MODELS)
+    payload = _request("GET", "/models?pageSize=200", api_key, None, VALIDATE_TIMEOUT)
 
     found: list[ModelInfo] = []
     for item in payload.get("models") or []:
@@ -152,7 +157,7 @@ def list_models(api_key: str) -> list[ModelInfo]:
         methods = item.get("supportedGenerationMethods") or []
         if not model_id or "generateContent" not in methods:
             continue
-        if any(bad in model_id for bad in ("embedding", "aqa", "imagen", "veo", "tts")):
+        if any(bad in model_id for bad in _NOT_CHAT):
             continue
         found.append(ModelInfo(
             id=model_id,

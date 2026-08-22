@@ -25,7 +25,7 @@ from .base import (
     Provider,
     ToolCall,
     check_key_shape,
-    friendly_key_error,
+    classify,
     pretty_model_name,
     speed_for,
 )
@@ -50,31 +50,22 @@ def _client(api_key: str):
 def _wrap(exc: Exception) -> LlmError:
     status = getattr(exc, "status_code", None)
     body = getattr(exc, "message", None) or str(exc)
-    return LlmError(f"anthropic: {type(exc).__name__}: {body}",
-                    friendly_key_error(status, str(body)))
+    kind, friendly = classify(status, str(body))
+    return LlmError(f"anthropic: {type(exc).__name__}: {body}", friendly, kind)
 
 
 def validate_key(api_key: str) -> None:
-    try:
-        _client(api_key).messages.create(
-            model=DEFAULT_MODEL,
-            max_tokens=1,
-            messages=[{"role": "user", "content": "ping"}],
-        )
-    except LlmError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise _wrap(exc) from exc
+    """Prove the key works, without depending on any one model existing."""
+    list_models(api_key)
 
 
 def list_models(api_key: str) -> list[ModelInfo]:
     try:
         page = _client(api_key).models.list(limit=50)
+    except LlmError:
+        raise
     except Exception as exc:  # noqa: BLE001
-        # The settings screen falls back to KNOWN_MODELS, which is enough to
-        # choose from — this is a nicety, not a requirement.
-        log.info("Could not list Anthropic models (%s)", exc)
-        return list(KNOWN_MODELS)
+        raise _wrap(exc) from exc
 
     found = [
         ModelInfo(

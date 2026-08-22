@@ -70,6 +70,11 @@ class Turn:
     reply: str = ""
     understood: bool = False
     skill: str = ""
+    #: How this turn was resolved: "rule" or "example" (offline, free and
+    #: instant), "llm" (a model was asked), or "local" (the engine's own
+    #: canned words, like asking you to repeat). Surfaced in the HUD so the
+    #: split between local and paid work is visible rather than a claim.
+    via: str = ""
 
 
 class Orchestrator:
@@ -462,7 +467,7 @@ class Orchestrator:
             # Speak on a worker thread so the listen loop keeps consuming audio
             # while the reply plays. Blocking here would park the only thread
             # that can notice the wake word, which is what barge-in needs.
-            self.speak_async(turn.reply, self.last_language)
+            self.speak_async(turn.reply, self.last_language, via=turn.via)
         elif not turn.understood:
             self._not_understood(heard_something=True)
         else:
@@ -533,13 +538,13 @@ class Orchestrator:
             self._misses = 0
             self.speak_async(
                 "मैं ये समझ नहीं पाया।" if hi else "I didn't catch that one.",
-                self.last_language,
+                self.last_language, via="local",
             )
             return
 
         prompt = "फिर से बोलिए?" if hi else "Sorry — say that again?"
         bus.publish(Event.LOG, message="asked for a repeat", misses=self._misses)
-        self.speak_async(prompt, self.last_language)
+        self.speak_async(prompt, self.last_language, via="local")
 
     def handle_text(self, text: str, language: str = "en", source: str = "text",
                     dry_run: bool = False) -> str:
@@ -578,7 +583,7 @@ class Orchestrator:
                 bus.set_state(State.ACTING)
                 result = registry.execute(intent.skill, intent.args, ctx)
                 return Turn(reply=result.text(language), understood=True,
-                            skill=intent.skill)
+                            skill=intent.skill, via=intent.matched_by)
 
             turn = self._ask_brain(text, language, ctx)
 
@@ -588,6 +593,7 @@ class Orchestrator:
         if not turn.understood and not turn.reply and source != "voice":
             turn.reply = ("मैं ये समझ नहीं पाया।" if language.startswith("hi")
                           else "I didn't catch that one.")
+            turn.via = "local"
         return turn
 
     def _ask_brain(self, text: str, language: str, ctx: SkillContext) -> Turn:
@@ -604,7 +610,7 @@ class Orchestrator:
                 reply=("इसके लिए मुझे एक AI key चाहिए। Settings खोल दी है।"
                        if language.startswith("hi")
                        else "I need an AI key for that one — I've opened settings."),
-                understood=True,
+                understood=True, via="local",
             )
 
         if not consent.allows(Capability.NETWORK):
@@ -643,7 +649,8 @@ class Orchestrator:
 
         understood = bool(result.actions or result.speech.strip())
         return Turn(reply=" ".join(replies), understood=understood,
-                    skill=result.actions[0].skill if result.actions else "")
+                    skill=result.actions[0].skill if result.actions else "",
+                    via="llm")
 
     def _resolve_language(self, transcript=None, detected: str = "", text: str = "") -> str:
         """Which language to reply in.
@@ -687,23 +694,24 @@ class Orchestrator:
 
     # -- speaking -----------------------------------------------------------
 
-    def speak(self, text: str, language: str = "en") -> bool:
+    def speak(self, text: str, language: str = "en", via: str = "") -> bool:
         """Speak and block until done. Used where ordering matters."""
         if not text.strip() or self.speaker is None:
             return True
         if not consent.allows(Capability.SPEAKER):
-            bus.publish(Event.REPLY, text=text, language=language, spoken=False)
+            bus.publish(Event.REPLY, text=text, language=language,
+                        spoken=False, via=via)
             return True
         with self._speak_lock:
             bus.set_state(State.SPEAKING)
-            bus.publish(Event.REPLY, text=text, language=language)
+            bus.publish(Event.REPLY, text=text, language=language, via=via)
             ok = self.speaker.speak(text, language)
             if self.capture:
                 # Drop whatever the microphone picked up of our own voice.
                 self.capture.drain()
             return ok
 
-    def speak_async(self, text: str, language: str = "en") -> None:
+    def speak_async(self, text: str, language: str = "en", via: str = "") -> None:
         """Speak without blocking the caller, returning to IDLE when finished."""
         if not text.strip() or self.speaker is None:
             bus.set_state(State.IDLE)
@@ -712,7 +720,7 @@ class Orchestrator:
 
         def run() -> None:
             try:
-                self.speak(text, language)
+                self.speak(text, language, via=via)
             finally:
                 # Barge-in already moved us to LISTENING; don't stomp on it.
                 if bus.state is State.SPEAKING:

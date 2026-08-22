@@ -179,6 +179,14 @@ export function Hud() {
           <span>
             Hotkey <b>{engine.info?.hotkey ?? "Ctrl+Alt+J"}</b>
           </span>
+          {(engine.localTurns > 0 || engine.aiTurns > 0) && (
+            <span
+              className="tally"
+              title="How this session split between offline handling and the AI model"
+            >
+              {engine.localTurns} offline · {engine.aiTurns} AI
+            </span>
+          )}
           <span className="who truncate" title={account ?? ""}>
             {llm && !llm.has_key ? <Badge kind="warn">no AI key</Badge> : account}
           </span>
@@ -228,11 +236,47 @@ function Conversation({ engine }: { engine: ReturnType<typeof useEngine> }) {
                 re-heard
               </span>
             )}
+            <ViaBadge via={turn.via} />
           </div>
         </div>
       ))}
       <div ref={endRef} />
     </div>
+  );
+}
+
+/**
+ * Says how a turn was resolved. The point is not decoration: "does this thing
+ * call an AI for everything?" is a fair question about a voice assistant, and
+ * the honest answer is a label on each turn rather than a paragraph in a README.
+ */
+function ViaBadge({ via }: { via?: string }) {
+  if (!via) return null;
+  if (via === "llm") {
+    return (
+      <span className="via ai" title="Answered by the AI model — this used your API key">
+        AI
+      </span>
+    );
+  }
+  if (via === "local") {
+    return (
+      <span className="via" title="Answered by the engine itself — no model, no network">
+        local
+      </span>
+    );
+  }
+  return (
+    <span
+      className="via"
+      title={
+        via === "rule"
+          ? "Matched an offline rule — no model, no network, no cost"
+          : "Matched a known phrasing offline — no model, no network, no cost"
+      }
+    >
+      offline
+    </span>
   );
 }
 

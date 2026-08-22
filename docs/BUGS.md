@@ -49,6 +49,17 @@ run exercises the macOS path.
 | A revoked capability still ran | Consent was drawn in the UI but not enforced in the engine. Now checked in `registry.execute()` **before** the confirmation prompt. | `test_a_revoked_capability_blocks_the_skill` in [`test_permissions.py`](../engine/tests/test_permissions.py) |
 | `python -m jarvis` refused every command | The session lock was enforced unconditionally, but a command-line launch has no app to sign in with. Now it mirrors the microphone's rule. | `test_a_command_line_launch_needs_no_sign_in` in [`test_server.py`](../engine/tests/test_server.py) |
 
+## The language model
+
+| Symptom | Root cause | Guarded by |
+|---|---|---|
+| A valid Gemini key rejected with "no access to this model" and no way forward | `gemini-2.5-flash` was hardcoded as the default, and Google has since stopped serving it to new keys. The key was fine; the default had rotted. Worse, validation *was* that model — so the failure blocked the only path to choosing a different one. Now the default is the `-latest` alias, the key is proved by listing models, and a model the key cannot serve is swapped for one it can, using the provider's own suggested replacement where it gives one. | `test_a_bad_model_name_is_not_reported_as_a_bad_key` in [`test_llm.py`](../engine/tests/test_llm.py) |
+| Presence in `/models` was treated as proof a model works | Google still advertises `gemini-2.5-flash` in its catalogue long after it stopped serving it. The only authority on whether a model works is the model, so validation ends in one tiny completion. | The comment on `_probe` in [`llm/__init__.py`](../engine/jarvis/llm/__init__.py) |
+| Errors were re-classified by grepping provider prose | "Is this the key's fault or the model's?" decides whether to give up or try another model, and deciding it by regex over a message meant telling people their key was broken when it never was. Failures now carry an `ErrorKind`. | `classify()` in [`llm/base.py`](../engine/jarvis/llm/base.py) |
+| The image, music and robotics models appeared in the model picker | They all advertise `generateContent`, so the filter let them through. | `_NOT_CHAT` in [`gemini_provider.py`](../engine/jarvis/llm/gemini_provider.py) |
+| Saying "hello" cost an API call — and on a fresh install answered "I need an AI key for that one" | Greetings, thanks, dismissals and a bare "hey jarvis" all fell through the rule table to the model. Asking a paid model to say hello is wrong twice over: it costs money and takes two seconds. Now handled by [`skills/social.py`](../engine/jarvis/skills/social.py). | `test_small_talk_never_reaches_the_model` (16 phrases), `test_ordinary_commands_are_handled_offline`, `test_open_ended_questions_do_go_to_the_model` in [`test_rules.py`](../engine/tests/test_rules.py) |
+| No way to tell whether a turn was handled locally or by the model | The information existed — the action event carried `via` — but nothing showed it, so "does this call an AI for everything?" was unanswerable from the UI. Every reply now carries `via`, the HUD badges each turn `offline` / `local` / `AI`, and the footer keeps a session tally. | The `ViaBadge` comment in [`Hud.tsx`](../desktop/renderer-src/src/screens/Hud.tsx) |
+
 ## Startup and packaging
 
 | Symptom | Root cause | Guarded by |

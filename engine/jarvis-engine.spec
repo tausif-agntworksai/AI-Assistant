@@ -39,6 +39,7 @@ hiddenimports += [
     for name in (
         "apps", "web", "system", "windows_mgr", "media", "volume",
         "display", "device", "files", "productivity", "messaging", "knowledge",
+        "social",
     )
 ]
 # The model providers are built inside `_build_registry()` rather than imported

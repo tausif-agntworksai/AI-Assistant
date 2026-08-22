@@ -96,12 +96,21 @@ to whoever built it. So Jarvis is useful the moment it starts, and asks for a
 key only when something actually needs one.
 
 ```
-  "chrome kholo" · "volume 40" · "screenshot lo" · "battery kitni hai"
-      └─ offline rules, no key, no network, no cost
+  "hey jarvis" · "hello" · "thanks" · "who are you"      ─┐
+  "chrome kholo" · "volume 40" · "screenshot lo"          ├─ offline rules
+  "battery kitni hai" · "5 minute ka timer laga do"      ─┘  no key, no network,
+                                                             no cost, instant
 
-  "explain quantum computing" · "translate this" · anything phrased oddly
-      └─ needs a model, and therefore a key
+  "explain quantum computing" · "translate this"         ──▶ needs a model
+  anything phrased in a way no rule recognises                and therefore a key
 ```
+
+**The router decides, and it shows you what it decided.** Each turn in the HUD
+is badged `offline`, `local` or `AI`, and the footer keeps a running count for
+the session — so "how much of this is the AI?" is a number you can read rather
+than a claim you have to take. Of 77 skills, 72 are reachable with no key at
+all; the model is consulted only when the rules do not recognise a phrasing,
+and for the four genuinely conversational skills.
 
 The first time an utterance needs the model and no key is set, Jarvis says so
 out loud and opens settings — rather than going quiet and leaving you to guess

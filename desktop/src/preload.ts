@@ -112,7 +112,7 @@ contextBridge.exposeInMainWorld("ai", {
     provider: string,
     apiKey: string,
     model?: string
-  ): Promise<{ ok: boolean; error?: string }> =>
+  ): Promise<{ ok: boolean; error?: string; model?: string }> =>
     ipcRenderer.invoke("ai:validate", provider, apiKey, model),
   models: (
     provider: string,

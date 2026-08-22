@@ -24,7 +24,7 @@ from .base import (
     Provider,
     ToolCall,
     check_key_shape,
-    friendly_key_error,
+    classify,
     pretty_model_name,
     speed_for,
 )
@@ -62,12 +62,13 @@ def _post(flavour: Flavour, api_key: str, body: dict[str, Any], timeout: int) ->
             timeout=timeout,
         )
     except requests.RequestException as exc:
-        raise LlmError(str(exc), f"Couldn't reach {flavour.label}.") from exc
+        raise LlmError(str(exc), f"Couldn't reach {flavour.label}.", "network") from exc
 
     if response.status_code >= 400:
+        kind, friendly = classify(response.status_code, response.text)
         raise LlmError(
             f"{flavour.id} HTTP {response.status_code}: {response.text[:400]}",
-            friendly_key_error(response.status_code, response.text),
+            friendly, kind,
         )
     try:
         return response.json()
@@ -119,19 +120,14 @@ def _parse_arguments(raw: Any, name: str) -> dict[str, Any]:
 
 def make_provider(flavour: Flavour) -> Provider:
     def validate_key(api_key: str) -> None:
-        key = check_key_shape(api_key)
-        # One token, one word. Enough to prove the key is live and entitled to
-        # the default model, and it costs essentially nothing.
-        _post(
-            flavour,
-            key,
-            {
-                "model": flavour.default_model,
-                "max_tokens": 1,
-                "messages": [{"role": "user", "content": "ping"}],
-            },
-            VALIDATE_TIMEOUT,
-        )
+        """Prove the key works, without depending on any one model existing.
+
+        This used to send a one-token completion against the *default* model,
+        which conflated two failures: a bad key and a default that the provider
+        has since retired. Listing models proves the credential and nothing
+        else, so a stale default can be corrected rather than blamed on the key.
+        """
+        list_models(api_key)
 
     def list_models(api_key: str) -> list[ModelInfo]:
         import requests
@@ -143,13 +139,20 @@ def make_provider(flavour: Flavour) -> Provider:
                 headers={"Authorization": f"Bearer {key}"},
                 timeout=VALIDATE_TIMEOUT,
             )
-            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise LlmError(str(exc), f"Couldn't reach {flavour.label}.", "network") from exc
+
+        if response.status_code >= 400:
+            kind, friendly = classify(response.status_code, response.text)
+            raise LlmError(
+                f"{flavour.id} HTTP {response.status_code}: {response.text[:300]}",
+                friendly, kind,
+            )
+        try:
             payload = response.json()
-        except Exception as exc:  # noqa: BLE001
-            # Not fatal: the settings screen falls back to `known_models`, and
-            # the user can still type a model id.
-            log.info("Could not list %s models (%s)", flavour.id, exc)
-            return list(flavour.known_models)
+        except ValueError as exc:
+            raise LlmError(f"{flavour.id} sent non-JSON",
+                           f"{flavour.label} sent a bad reply.") from exc
 
         found: list[ModelInfo] = []
         for item in payload.get("data") or []:

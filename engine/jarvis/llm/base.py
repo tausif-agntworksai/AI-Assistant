@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +37,14 @@ VALIDATE_TIMEOUT = 20
 MAX_KEY_CHARS = 512
 
 
+#: What went wrong, coarsely. Callers branch on this instead of re-reading the
+#: message, because "is this the key's fault or the model's?" decides whether to
+#: give up or to try a different model — and deciding that by grepping a
+#: provider's prose is how you end up telling someone their key is broken when
+#: it never was.
+ErrorKind = Literal["key", "model", "quota", "network", "provider", "other"]
+
+
 class LlmError(Exception):
     """Anything that went wrong talking to a provider.
 
@@ -44,9 +52,10 @@ class LlmError(Exception):
     contain provider detail worth logging but not worth reading aloud.
     """
 
-    def __init__(self, detail: str, friendly: str) -> None:
+    def __init__(self, detail: str, friendly: str, kind: ErrorKind = "other") -> None:
         super().__init__(detail)
         self.friendly = friendly
+        self.kind = kind
 
 
 class Speed(str):
@@ -146,37 +155,59 @@ _QUOTA_TEXT = re.compile(
 )
 
 
-def friendly_key_error(status: int | None, raw: str) -> str:
-    """Turn a provider's rejection into something a person can act on.
+# Providers often name the replacement in the rejection itself — Google says
+# "Please update your code to use models/gemini-3.6-flash". Repeating that back
+# is far more use than "pick another one".
+_SUGGESTED = re.compile(
+    r"(?:use|try|switch to)\s+(?:models/)?([A-Za-z0-9][A-Za-z0-9._-]{3,60})",
+    re.IGNORECASE,
+)
 
-    Status first, then the text — but with one important exception the AI
-    Calculator gets wrong. It maps HTTP 400 to "that key looks malformed",
-    which is right for Gemini and wrong for every OpenAI-compatible provider:
-    Groq, DeepSeek and Mistral all answer 400 or 404 for an unknown *model*.
-    Telling someone their key is broken when the model name is what's wrong
-    sends them to re-copy a key that was fine all along.
+
+def suggested_model(raw: str) -> str:
+    match = _SUGGESTED.search(raw or "")
+    return match.group(1).rstrip(".,;") if match else ""
+
+
+def classify(status: int | None, raw: str) -> tuple[ErrorKind, str]:
+    """Work out what kind of failure this is, and what to tell the user.
+
+    Order matters, and one ordering the AI Calculator gets wrong: it maps HTTP
+    400 to "that key looks malformed", which is right for Gemini and wrong for
+    every OpenAI-compatible provider — Groq, DeepSeek and Mistral all answer
+    400 or 404 for an unknown *model*. Telling someone their key is broken when
+    the model name is the problem sends them off to re-copy a key that was fine.
     """
     from ..security import redact
 
     text = redact(raw or "")
 
     if _NO_MODEL_TEXT.search(text):
-        return _NO_ACCESS
+        hint = suggested_model(text)
+        return "model", (
+            f"That model isn't available to this key — try {hint} instead."
+            if hint else _NO_ACCESS
+        )
     if status in (401, 403) or _BAD_KEY_TEXT.search(text):
-        return _KEY_REJECTED
+        return "key", _KEY_REJECTED
     if status == 429:
-        return _QUOTA if _QUOTA_TEXT.search(text) else _RATE_LIMITED
+        return "quota", (_QUOTA if _QUOTA_TEXT.search(text) else _RATE_LIMITED)
     if _QUOTA_TEXT.search(text):
-        return _QUOTA
+        return "quota", _QUOTA
     if status == 404:
-        return _NO_ACCESS
+        return "model", _NO_ACCESS
     if status == 400:
-        return "That request was rejected. Check the key and the chosen model."
+        return "other", "That request was rejected. Check the key and the chosen model."
     if status in (500, 502, 503, 529):
-        return "That provider is having trouble right now. Try again shortly."
+        return "provider", "That provider is having trouble right now. Try again shortly."
 
     first_line = text.strip().splitlines()[0][:180] if text.strip() else "unknown error"
-    return f"Could not reach the model: {first_line}"
+    return "other", f"Could not reach the model: {first_line}"
+
+
+def friendly_key_error(status: int | None, raw: str) -> str:
+    """Just the message. Kept for call sites that don't need the classification."""
+    return classify(status, raw)[1]
 
 
 def check_key_shape(api_key: str) -> str:

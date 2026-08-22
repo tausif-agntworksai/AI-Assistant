@@ -283,7 +283,8 @@ export class Engine {
    * Proves a key works before it is saved. The engine makes the live call, so
    * the key travels main → loopback → provider and never through a page.
    */
-  async validateKey(provider: string, apiKey: string, model = ""): Promise<void> {
+  /** Returns the model that actually worked, which may not be the one asked for. */
+  async validateKey(provider: string, apiKey: string, model = ""): Promise<string> {
     const response = await fetch(`${this.url}/llm/validate`, {
       method: "POST",
       headers: {
@@ -292,8 +293,12 @@ export class Engine {
       },
       body: JSON.stringify({ provider, api_key: apiKey, model }),
     });
-    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    const body = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      model?: string;
+    };
     if (!response.ok) throw new Error(body.error ?? "That key could not be verified.");
+    return body.model ?? model;
   }
 
   async listModels(provider: string, apiKey: string): Promise<unknown[]> {

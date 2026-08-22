@@ -124,7 +124,7 @@ interface AiBridge {
     provider: string,
     apiKey: string,
     model?: string
-  ): Promise<{ ok: boolean; error?: string }>;
+  ): Promise<{ ok: boolean; error?: string; model?: string }>;
   models(
     provider: string,
     apiKey?: string

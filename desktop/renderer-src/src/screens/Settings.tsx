@@ -32,6 +32,9 @@ import "./settings.css";
 
 type Status = "idle" | "checking" | "ok" | "error";
 
+/** Sentinel for the "type it yourself" option in the model dropdown. */
+const CUSTOM = "__custom__";
+
 export function Settings({ onClose }: { onClose: () => void }) {
   const [info, setInfo] = useState<AiInfo | null>(null);
 
@@ -78,6 +81,9 @@ function ModelSection({ info, onSaved }: { info: AiInfo; onSaved: () => Promise<
   const [message, setMessage] = useState<string | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
+  // A dropdown built from a list that failed to load is a dead end, so
+  // there is always a way to name a model by hand.
+  const [custom, setCustom] = useState(false);
 
   const provider: ProviderMeta | undefined = providers.find((p) => p.id === providerId);
   const hasStoredKey = stored.hasKey && stored.provider === providerId;
@@ -116,12 +122,14 @@ function ModelSection({ info, onSaved }: { info: AiInfo; onSaved: () => Promise<
     setStatus("idle");
     setMessage(null);
     setModels([]);
+    setCustom(false);
   };
 
   const save = async () => {
     setStatus("checking");
     setMessage(null);
     try {
+      let settled = model;
       if (key.trim()) {
         const check = await ai.validate(providerId, key.trim(), model);
         if (!check.ok) {
@@ -129,16 +137,26 @@ function ModelSection({ info, onSaved }: { info: AiInfo; onSaved: () => Promise<
           setMessage(check.error ?? "That key could not be verified.");
           return;
         }
+        // Providers retire models without retiring keys, so the engine reports
+        // back the model that actually answered. Save that, not what we asked
+        // for — otherwise the very next question fails on a dead model id.
+        settled = check.model ?? model;
       } else if (!hasStoredKey) {
         setStatus("error");
         setMessage("Paste an API key first.");
         return;
       }
-      // Saved only after the provider itself confirmed the key works.
-      await ai.setLlm(providerId, model, key.trim() ? key.trim() : undefined);
+
+      await ai.setLlm(providerId, settled, key.trim() ? key.trim() : undefined);
       setKey("");
+      setModel(settled);
       setStatus("ok");
-      setMessage(`Ready — using ${provider?.label ?? providerId}.`);
+      const changed = settled && model && settled !== model;
+      setMessage(
+        changed
+          ? `Ready — ${model} isn't available to this key, so it's using ${settled}.`
+          : `Ready — using ${provider?.label ?? providerId}${settled ? ` (${settled})` : ""}.`
+      );
       await onSaved();
       void loadModels(providerId, "");
     } catch (err) {
@@ -181,24 +199,47 @@ function ModelSection({ info, onSaved }: { info: AiInfo; onSaved: () => Promise<
       <Field
         label="Model"
         hint={
-          loadingModels
-            ? "Loading this provider's models…"
-            : models.length
-              ? undefined
-              : "Add a key to load the full list."
+          custom
+            ? "Exact model id, as the provider spells it."
+            : loadingModels
+              ? "Loading this provider's models…"
+              : models.length
+                ? "Save checks the model as well as the key, and falls back to a working one."
+                : "Add a key to load the full list."
         }
       >
-        <select value={model} onChange={(event) => setModel(event.target.value)}>
-          <option value="">
-            {provider ? `Default (${provider.default_model})` : "Default"}
-          </option>
-          {options.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label}
-              {option.speed ? ` — ${option.speed}` : ""}
+        {custom ? (
+          <input
+            className="text"
+            autoFocus
+            spellCheck={false}
+            placeholder={provider?.default_model ?? "model-id"}
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+          />
+        ) : (
+          <select
+            value={options.some((o) => o.id === model) || !model ? model : CUSTOM}
+            onChange={(event) => {
+              if (event.target.value === CUSTOM) {
+                setCustom(true);
+                return;
+              }
+              setModel(event.target.value);
+            }}
+          >
+            <option value="">
+              {provider ? `Default (${provider.default_model})` : "Default"}
             </option>
-          ))}
-        </select>
+            {options.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+                {option.speed ? ` — ${option.speed}` : ""}
+              </option>
+            ))}
+            <option value={CUSTOM}>Type a model id…</option>
+          </select>
+        )}
       </Field>
 
       <Field

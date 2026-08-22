@@ -624,8 +624,8 @@ app.whenReady().then(async () => {
     "ai:validate",
     async (_e, provider: string, apiKey: string, model?: string) => {
       try {
-        await engine.validateKey(provider, apiKey, model ?? "");
-        return { ok: true };
+        const resolved = await engine.validateKey(provider, apiKey, model ?? "");
+        return { ok: true, model: resolved };
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }

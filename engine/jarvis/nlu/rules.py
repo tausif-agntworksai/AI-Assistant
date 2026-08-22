@@ -186,6 +186,29 @@ _FOLDERS = r"downloads?|documents?|desktop|pictures|photos|music|videos?|recycle
 
 
 RULES: list[tuple[re.Pattern[str], str, Builder]] = [
+    # --- social, first of all ---
+    # These used to fall through to the language model, which meant "hello" cost
+    # an API call and, with no key configured, answered "I need an AI key for
+    # that one." `normalize` strips the assistant's own name as leading filler
+    # and then restores it when nothing else is left, so a bare summons arrives
+    # here as "jarvis" or "hey jarvis".
+    (_rx(r"^(?:hey|hi|o|arey|sun|suno)?\s*jarvis$"), "acknowledge", _none),
+    (_rx(r"^(?:hello|hi|hey|namaste|namaskar|salaam|yo)$"), "greet", _none),
+    (_rx(r"^(?:good\s+(?:morning|afternoon|evening|night))$"), "greet", _none),
+    (_rx(r"^(?:how are you|kaise ho|kaisa hai|kya haal hai|sab theek)$"), "greet", _none),
+    (_rx(r"^(?:thanks|thank you|thanx|shukriya|dhanyavad|dhanyawad)$"),
+     "acknowledge_thanks", _none),
+    (_rx(r"^(?:never mind|nevermind|forget it|nothing|no nothing|"
+         r"kuch nahi|kuchh nahi|rehne do|rehne de|chhodo|chodo)$"), "never_mind", _none),
+    # "what do" is not a typo. `normalize` strips "can you" as filler — which is
+    # right for "could you open chrome" and unhelpful here, since it turns
+    # "what can you do" into "what do". Nothing else means "what do", so
+    # claiming it is safe.
+    (_rx(r"^(?:who are you|what are you|what do|what can do|"
+         r"tum kaun ho|aap kaun ho|kya kar sakte ho|kya kar sakta hai|"
+         r"tumhe kya aata hai)$"),
+     "who_are_you", _none),
+
     # --- system power (before app rules: "computer band karo" is not an app) --
     (_rx(rf"^(?:{V('shutdown')})(?:\s+(?:the\s+)?(?:pc|computer|laptop|system))?$"),
      "shutdown_pc", _none),

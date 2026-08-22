@@ -310,13 +310,16 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
                 headers={"Retry-After": str(retry_after)},
             )
         try:
-            await asyncio.to_thread(
+            resolved = await asyncio.to_thread(
                 llm.validate_key, payload.provider, payload.api_key, payload.model
             )
         except llm.LlmError as exc:
             log.info("Key check failed for %s: %s", payload.provider, exc)
             return JSONResponse({"ok": False, "error": exc.friendly}, status_code=400)
-        return {"ok": True}
+        # `resolved` may not be what was asked for: a provider can retire a
+        # model without retiring the key, and the caller should save what
+        # actually works rather than what it hoped for.
+        return {"ok": True, "model": resolved}
 
     @app.post("/llm/models")
     async def llm_models(payload: LlmProbe) -> Any:
@@ -333,7 +336,9 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
                 llm.list_models, payload.provider, payload.api_key
             )
         except llm.LlmError as exc:
-            return JSONResponse({"error": exc.friendly}, status_code=400)
+            # Lenient on purpose: an empty model picker is a dead end, so fall
+            # back to the handful we know about and say what went wrong.
+            return {"models": llm.known_models(payload.provider), "error": exc.friendly}
         return {"models": models}
 
     @app.post("/speech")

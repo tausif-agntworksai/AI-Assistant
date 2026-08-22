@@ -141,3 +141,70 @@ def test_level_rules_do_not_invent_a_number():
     intent = route("volume kam karo")
     assert intent.skill == "volume_down"
     assert "level" not in intent.args
+
+
+# --- the router keeps work away from the model -----------------------------
+
+
+@pytest.mark.parametrize("phrase,skill", [
+    ("hey jarvis", "acknowledge"),
+    ("jarvis", "acknowledge"),
+    ("hello", "greet"),
+    ("hi", "greet"),
+    ("namaste", "greet"),
+    ("good morning", "greet"),
+    ("kaise ho", "greet"),
+    ("thanks", "acknowledge_thanks"),
+    ("thank you", "acknowledge_thanks"),
+    ("shukriya", "acknowledge_thanks"),
+    ("never mind", "never_mind"),
+    ("kuch nahi", "never_mind"),
+    ("rehne do", "never_mind"),
+    ("who are you", "who_are_you"),
+    ("what can you do", "who_are_you"),
+    ("kya kar sakte ho", "who_are_you"),
+])
+def test_small_talk_never_reaches_the_model(phrase, skill):
+    """Saying hello should not cost an API call.
+
+    These all used to fall through the rule table to the language model, which
+    on a fresh install with no key answered "I need an AI key for that one" —
+    to the word "hello". Asking a paid model to greet someone is the wrong
+    shape of solution twice: it costs money and it takes two seconds.
+    """
+    from jarvis.skills import load_all
+
+    load_all()
+    intent = route(phrase)
+    assert intent is not None, f"{phrase!r} fell through to the model"
+    assert intent.skill == skill
+    assert intent.matched_by == "rule"
+
+
+@pytest.mark.parametrize("phrase", [
+    "chrome kholo",
+    "volume 40",
+    "battery kitni bachi hai",
+    "take a screenshot",
+    "laptop sula do",
+    "set a timer for 5 minutes",
+])
+def test_ordinary_commands_are_handled_offline(phrase):
+    """The whole point of the router: the common cases cost nothing."""
+    from jarvis.skills import load_all
+
+    load_all()
+    assert route(phrase) is not None, f"{phrase!r} would have gone to the model"
+
+
+@pytest.mark.parametrize("phrase", [
+    "explain quantum computing to me",
+    "write me a haiku about winter",
+    "why is the sky blue",
+])
+def test_open_ended_questions_do_go_to_the_model(phrase):
+    """The router must not over-reach either — these genuinely need a model."""
+    from jarvis.skills import load_all
+
+    load_all()
+    assert route(phrase) is None, f"{phrase!r} was wrongly claimed by a rule"

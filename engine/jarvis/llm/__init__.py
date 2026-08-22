@@ -31,6 +31,7 @@ from .base import (
     Provider,
     ToolCall,
     check_key_shape,
+    suggested_model,
 )
 
 log = logging.getLogger(__name__)
@@ -180,24 +181,85 @@ selection = Selection()
 # --- one-off operations the settings screen needs --------------------------
 
 
-def validate_key(provider_id: str, api_key: str, model: str = "") -> None:
-    """Prove a key works before it is saved. Raises LlmError if it doesn't."""
+def validate_key(provider_id: str, api_key: str, model: str = "") -> str:
+    """Prove a key works, and settle on a model it can actually reach.
+
+    Returns the model to save — which may not be the one asked for.
+
+    This exists because hardcoded model ids rot. `gemini-2.5-flash` was this
+    project's Gemini default until Google stopped serving it to new keys, at
+    which point a perfectly good key was rejected with a message that read like
+    the key's fault and left no way forward: the default was broken, and the
+    model list was fetched with the same call that had just failed.
+
+    So the key is proved by *listing* models, which no single model's fate can
+    break, and the requested model is then checked against that list. If it
+    isn't there, a working one is chosen and returned rather than the whole
+    thing failing.
+    """
     provider = get_provider(provider_id)
-    provider.validate_key(api_key)
-    # A key can be valid and still have no access to the chosen model, which is
-    # a different problem with a different fix — so check it separately rather
-    # than letting the user discover it on their first question.
-    if model and model != provider.default_model:
-        provider.complete(
-            system="Reply with the single word ok.",
-            messages=[{"role": "user", "content": "ping"}],
-            tools=[],
-            api_key=api_key,
-            model=model,
-            max_tokens=4,
-        )
+    models = provider.list_models(api_key)   # raises LlmError if the key is bad
+    wanted = (model or "").strip() or provider.default_model
+
+    try:
+        _probe(provider, api_key, wanted)
+        return wanted
+    except LlmError as exc:
+        # Only a model-shaped failure is worth retrying. A rejected key or an
+        # exhausted quota will fail identically on every model, and silently
+        # walking the whole catalogue would just be a slower way to fail.
+        if exc.kind != "model":
+            raise
+
+        replacement = suggested_model(str(exc)) or _closest_model(provider, models, wanted)
+        if not replacement or replacement == wanted:
+            raise
+        log.warning("%s cannot serve %r (%s) — trying %r",
+                    provider.id, wanted, exc.friendly, replacement)
+        _probe(provider, api_key, replacement)
+        return replacement
+
+
+def _probe(provider: Provider, api_key: str, model: str) -> None:
+    """One tiny completion, to prove this key can actually use this model.
+
+    Listing models is not enough on its own: Google still advertises
+    `gemini-2.5-flash` in `/models` long after it stopped serving it to new
+    keys, so presence in the catalogue proves nothing. The only authority on
+    whether a model works is the model.
+    """
+    provider.complete(
+        system="Reply with the single word ok.",
+        messages=[{"role": "user", "content": "ping"}],
+        tools=[],
+        api_key=api_key,
+        model=model,
+        max_tokens=4,
+    )
+
+
+def _closest_model(provider: Provider, models: list[ModelInfo], exclude: str = "") -> str:
+    """Pick a stand-in when the requested model cannot be served.
+
+    Prefers the provider's own default, then anything marked fastest — a voice
+    assistant would rather be quick than clever — then whatever exists.
+    """
+    ids = [m.id for m in models if m.id != exclude]
+    if not ids:
+        return ""
+    if provider.default_model in ids:
+        return provider.default_model
+    for model in models:
+        if model.speed == "fastest" and model.id != exclude:
+            return model.id
+    return ids[0]
 
 
 def list_models(provider_id: str, api_key: str) -> list[dict[str, Any]]:
     provider = get_provider(provider_id)
     return [model.as_dict() for model in provider.list_models(api_key)]
+
+
+def known_models(provider_id: str) -> list[dict[str, Any]]:
+    """The offline fallback, so a failed listing never leaves an empty picker."""
+    return [model.as_dict() for model in get_provider(provider_id).known_models]

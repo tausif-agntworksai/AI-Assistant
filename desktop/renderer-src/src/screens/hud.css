@@ -99,6 +99,25 @@
 .msg.error .body { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
 .msg.confirm .body { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
 
+/* How a turn was resolved. Quiet by default; the AI one is tinted because it
+   is the one that costs money. */
+.via {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+  background: var(--panel-2);
+  color: var(--faint);
+}
+.via.ai { background: var(--accent-soft); color: var(--accent); }
+
+.tally { color: var(--faint); font-variant-numeric: tabular-nums; }
+
 .msg .lang {
   font-size: 9.5px;
   color: var(--faint);
