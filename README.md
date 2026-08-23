@@ -302,6 +302,36 @@ Run the tests with `python -m pytest` from `engine\`.
 
 ---
 
+## Without internet
+
+Most of what Jarvis does never touches the network, and that half keeps working
+with the router unplugged: opening and closing apps, volume, brightness,
+windows, sleep and shutdown, timers and reminders, notes, the clipboard, file
+search, screenshots, the camera, and answering calls. Around fifty commands.
+
+Four things do need a connection — the model, the weather, the news, and web
+search — and offline they say so:
+
+> *"The weather needs the internet, and there's no connection right now.
+> Everything on your computer still works."*
+
+That replaced **"That didn't work."**, which was indistinguishable from a bug and
+invited you to repeat a command that could not succeed. The check is only run for
+skills that declared they need one, so a local command never waits on it, and an
+inconclusive check counts as online — a wrong "you're offline" would block
+something that works, which is worse than a slow failure.
+
+Speech keeps working too: replies fall back from Edge's neural voices to the
+Windows offline voice, and the wake-word acknowledgement falls back to a chime
+if its spoken cues were never cached.
+
+Two things are deliberately *not* gated. `open_website` and `open_url` still open
+— they can point at `localhost`, a router or an intranet host, all of which
+work offline — but the reply adds *"there's no internet right now, so it may
+not load"* so a blank tab does not look like a failed command.
+
+---
+
 ## Signing in
 
 If `desktop\.env` names a Firebase project, Jarvis will not open the
@@ -403,8 +433,58 @@ a no, and with nothing able to ask, gated actions are refused rather than
 allowed. Shutdown and restart also run on a 15-second delay — say **“cancel
 shutdown”** to stop one.
 
-Messaging never sends by itself. `send_whatsapp` opens the chat with the
-message typed and waits for you to press send.
+Messaging is read back before anything opens: **"say hi to sana"** is confirmed
+as *"Send “Hi” to Sana?"*, with the contact name it resolved to, so a
+wrong match is caught before a stranger gets the message. After you agree, the
+chat opens with the message typed and Jarvis presses send — but only once it
+has confirmed the messaging app actually holds focus, so a slow window leaves
+the draft sitting there rather than firing a stray keystroke into whatever was
+in front. Set `messaging.auto_send: false` to always stop at the draft.
+
+Naming an app (**"message rahul on telegram"**) overrides the default; otherwise
+it uses `messaging.default_app`, which is WhatsApp. `compose_email` never
+auto-sends — mail clients differ too much for a blind keystroke to mean
+send.
+
+If two saved contacts are both close to the name you said, it stops and asks
+which one rather than picking the higher score. That is the one mistake here
+that reaches a stranger and cannot be undone.
+
+### Camera
+
+**"take a photo"** / **"photo le lo"** does not open the Camera app. It opens the
+device, discards eight frames while auto-exposure settles — otherwise the
+first photo of a session is a dark rectangle — grabs one, releases the camera
+and saves it to `Pictures\Jarvis`. The device is closed on every path out,
+including the failures: a webcam left with its light on after one photo is not
+something to ship.
+
+**"open the camera"** is the separate, explicit request that hands you the
+Windows Camera app.
+
+### Calls
+
+**"answer the call"**, **"pick up"**, **"call uthao"** — and **"hang up"**,
+**"call kaat do"** — work for WhatsApp Desktop, Teams, Zoom and Google
+Chat/Meet calls ringing on this computer.
+
+Be aware of what this is. None of those apps has an API or a documented hotkey
+for "answer", so the only available route is the one a person uses: find the
+window that is ringing, bring it to the front, press the key that accepts. Two
+consequences are designed for rather than hoped away:
+
+- **Nothing is sent unless the ringing window was found and confirmed to have
+  come forward.** A stray `Enter` or `Escape` into whatever happened to be
+  focused could do anything. Not finding it says *"I can't see a call
+  ringing"*, which is true and useful.
+- **A browser call needs its tab to be the one you are looking at.** A
+  background tab receives no keystrokes, and nothing outside the browser can
+  change that, so the reply says so.
+
+**Calls to your phone number are not here and cannot be.** A Windows machine has
+no cellular radio and no access to the phone's call stack — that needs the
+mobile client, which is not built. The reply says this rather than failing
+silently, so it is heard once instead of discovered repeatedly.
 
 ---
 

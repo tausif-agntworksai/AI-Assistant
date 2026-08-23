@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import sys as _sys
 from pathlib import Path
 
 
@@ -75,6 +76,31 @@ ENV_FILE: Path = _user_file(".env")
 APP_INDEX_CACHE: Path = CACHE_DIR / "app_index.json"
 AUDIT_LOG: Path = LOGS_DIR / "audit.jsonl"
 ENGINE_LOG: Path = LOGS_DIR / "engine.log"
+
+
+def pictures_dir() -> Path:
+    """The user's Pictures folder, by whatever name this OS gives it.
+
+    Not under DATA_DIR: a photo the user asked for is theirs, and belongs
+    somewhere they would look for it rather than in an application cache they do
+    not know exists.
+    """
+    home = Path.home()
+    if _sys.platform == "win32":
+        # The folder can be redirected (OneDrive does this by default), and the
+        # registry is the only place that knows where it actually went.
+        try:
+            import winreg
+
+            key = (r"Software\Microsoft\Windows\CurrentVersion"
+                   r"\Explorer\Shell Folders")
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
+                value, _ = winreg.QueryValueEx(handle, "My Pictures")
+            if value:
+                return Path(value)
+        except Exception:  # noqa: BLE001 - fall through to the usual place
+            pass
+    return home / "Pictures"
 
 
 def ensure_dirs() -> None:

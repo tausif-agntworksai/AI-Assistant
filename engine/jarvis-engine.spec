@@ -64,6 +64,17 @@ hiddenimports += [
 # microphone is not behaving.
 hiddenimports += ["jarvis.audio.wake_tune"]
 
+# OpenCV is imported inside `take_photo` so that a machine without it loses one
+# skill rather than failing to start. PyInstaller cannot see that import, and
+# `cv2` needs its binaries collected rather than just its module named.
+try:
+    _cv2_datas, _cv2_binaries, _cv2_hidden = collect_all("cv2")
+    datas += _cv2_datas
+    binaries += _cv2_binaries
+    hiddenimports += _cv2_hidden
+except Exception:  # noqa: BLE001 - not installed; take_photo says so at runtime
+    pass
+
 hiddenimports += [
     "win32com.client", "pythoncom", "pywintypes", "win32gui", "win32process",
     "win32api", "win32con", "wmi", "uvicorn.logging", "uvicorn.loops.auto",

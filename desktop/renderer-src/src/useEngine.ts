@@ -67,10 +67,6 @@ export function useEngine() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [status, setStatus] = useState<EngineStatus>({});
   const [needsKey, setNeedsKey] = useState(false);
-  // A running tally for this session, so "how much of this is the AI?" has
-  // an answer you can read rather than take on trust.
-  const [localTurns, setLocalTurns] = useState(0);
-  const [aiTurns, setAiTurns] = useState(0);
 
   const socket = useRef<WebSocket | null>(null);
   const retryTimer = useRef<number | undefined>(undefined);
@@ -151,8 +147,6 @@ export function useEngine() {
             text: String(event.text ?? ""),
             via: String(event.via ?? ""),
           });
-          if (event.via === "llm") setAiTurns((n) => n + 1);
-          else if (event.via) setLocalTurns((n) => n + 1);
           break;
 
         case "action":
@@ -273,8 +267,6 @@ export function useEngine() {
     level,
     turns,
     status,
-    localTurns,
-    aiTurns,
     needsKey,
     clearNeedsKey: useCallback(() => setNeedsKey(false), []),
     send,

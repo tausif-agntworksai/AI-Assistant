@@ -16,17 +16,25 @@
  *   * **A validated key is saved only after the provider confirms it.** Storing
  *     first and discovering later means an assistant that fails on its first
  *     real question with a message about a key you thought you had set.
+ *
+ * Permissions live here too, and that is the point rather than a convenience.
+ * They were asked once during setup and then had no way back: changing your mind
+ * about the microphone or the clipboard meant deleting a file you would have to
+ * be told about. Anything a user can be asked to grant has to be revocable in
+ * the same number of clicks, or the original question was not really a question.
  */
 import { useCallback, useEffect, useState } from "react";
 import {
   ai,
   cleanError,
+  consent,
   type AiInfo,
+  type CapabilitySpec,
   type ModelOption,
   type ProviderMeta,
   type SpeechProviderMeta,
 } from "../bridge";
-import { Badge, Button, Field, Note, Spinner } from "../components/ui";
+import { Badge, Button, Field, Note, Spinner, Switch } from "../components/ui";
 import { useTheme, type ThemeChoice } from "../useTheme";
 import "./settings.css";
 
@@ -59,6 +67,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
           <>
             <ModelSection info={info} onSaved={reload} />
             <SpeechSection info={info} onSaved={reload} />
+            <PermissionsSection />
             <AppearanceSection />
           </>
         )}
@@ -384,6 +393,155 @@ function SpeechSection({ info, onSaved }: { info: AiInfo; onSaved: () => Promise
         </Button>
       </div>
     </section>
+  );
+}
+
+/* ── permissions ──────────────────────────────────────────────────────── */
+
+/**
+ * The same fifteen capabilities the setup screen asks about, editable.
+ *
+ * Three things differ from the setup screen, all because this is a settings
+ * pane rather than a wizard:
+ *
+ *   * **Changes apply as you make them.** A Save button here would let someone
+ *     flip four switches, close the panel and believe they had changed
+ *     something. Each toggle posts immediately and the engine re-reads its
+ *     consent, so a capability switched off is off before the panel closes.
+ *   * **The last state is kept for the reversal.** Posting the whole map on
+ *     every toggle means a failed save would otherwise leave the UI showing a
+ *     state the engine does not have, so a failure rolls the switch back and
+ *     says why.
+ *   * **Required capabilities are shown, not hidden.** The microphone and the
+ *     speaker cannot be turned off — an assistant that cannot hear or answer is
+ *     not one — and showing them greyed with the reason is more honest than a
+ *     list that quietly omits two entries.
+ */
+function PermissionsSection() {
+  const [specs, setSpecs] = useState<CapabilitySpec[] | null>(null);
+  const [granted, setGranted] = useState<Record<string, boolean>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    const data = await consent.list();
+    setSpecs(data.capabilities);
+    setGranted(data.granted);
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const toggle = async (id: string, next: boolean) => {
+    const previous = granted;
+    const updated = { ...granted, [id]: next };
+    setGranted(updated);
+    setBusy(id);
+    setError("");
+    try {
+      await consent.save(updated);
+      // Re-read rather than trusting the local copy: the engine is the
+      // authority on what it will actually honour, and a capability the
+      // installer marked required will come back on.
+      await load();
+    } catch (err) {
+      setGranted(previous);
+      setError(cleanError(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (!specs) {
+    return (
+      <section className="panel section">
+        <div className="section-head">
+          <h3>Permissions</h3>
+        </div>
+        <Spinner label="Reading permissions…" />
+      </section>
+    );
+  }
+
+  const on = specs.filter((spec) => granted[spec.id]).length;
+
+  return (
+    <section className="panel section">
+      <div className="section-head">
+        <h3>Permissions</h3>
+        <Badge kind="info">
+          {on} of {specs.length} on
+        </Badge>
+      </div>
+      <p className="section-note">
+        What Jarvis is allowed to reach. Switching one off removes the ability
+        rather than adding a question — the engine refuses the skill outright.
+      </p>
+
+      {error && <Note kind="warn">{error}</Note>}
+
+      <div className="perm-list">
+        {specs.map((spec) => (
+          <PermissionRow
+            key={spec.id}
+            spec={spec}
+            on={Boolean(granted[spec.id])}
+            busy={busy === spec.id}
+            onChange={(next) => void toggle(spec.id, next)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PermissionRow({
+  spec,
+  on,
+  busy,
+  onChange,
+}: {
+  spec: CapabilitySpec;
+  on: boolean;
+  busy: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  // Windows keeps its own switch for the microphone and the camera, and consent
+  // here means nothing if that one is off. The failure is silent — the stream
+  // opens and delivers nothing forever — so it is called out and linked.
+  const osBlocked = spec.osPermission && spec.os === "denied";
+
+  return (
+    <div className={`perm${on ? "" : " off"}`}>
+      <div className="perm-main">
+        <div className="perm-text">
+          <div className="perm-title">
+            {spec.title}
+            {spec.required && <Badge kind="info">always on</Badge>}
+            {spec.unused && <Badge kind="info">not used yet</Badge>}
+          </div>
+          <div className="perm-what">{spec.what}</div>
+        </div>
+        <Switch
+          checked={on}
+          disabled={Boolean(spec.required) || busy}
+          onChange={onChange}
+          label={spec.title}
+        />
+      </div>
+      {osBlocked && (
+        <Note kind="warn">
+          Windows is blocking this, so granting it here has no effect.{" "}
+          <button
+            className="linkish"
+            onClick={() => void consent.openOsSettings(spec.osPermission!)}
+          >
+            Open Windows settings
+          </button>
+        </Note>
+      )}
+    </div>
   );
 }
 

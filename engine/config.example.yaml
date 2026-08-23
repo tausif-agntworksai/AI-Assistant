@@ -106,6 +106,29 @@ server:
   host: 127.0.0.1          # loopback only — the API can shut the machine down
   port: 8756               # WebSocket + HTTP for the Electron HUD
 
+messaging:
+  # Which app "say hi to sana" uses when no app is named.
+  # whatsapp | sms | telegram | signal | slack
+  default_app: whatsapp
+
+  # Whether to press send, or leave the draft open with the cursor in it.
+  #
+  # On by default: "send hi to sana" asks for a message to be sent, and stopping
+  # one keystroke short is a strange place to stop. Two things make that safe --
+  # the command is read back and confirmed first, *with the contact name it
+  # resolved to*, so a wrong match is caught before anything is typed; and the
+  # keypress only happens once the messaging app is confirmed to hold focus, so
+  # a slow window leaves the draft alone instead of firing Enter into whatever
+  # was in front.
+  #
+  # Set false to review every message yourself before it goes.
+  auto_send: true
+
+  # How long to wait for the app window to come forward before giving up on
+  # pressing send. Generous, because WhatsApp Desktop cold-starting is slow and
+  # the cost of impatience is only an unsent draft, which the reply then says.
+  focus_timeout_sec: 6.0
+
 assistant:
   name: Jarvis
   # Language for replies when detection is ambiguous: hi | en | auto

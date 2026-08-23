@@ -36,19 +36,36 @@ RATE = 16000
 # Short single syllables, and deliberately so. A cue overlaps whatever you say
 # next, and the frames it occupies are dropped rather than transcribed — so
 # every millisecond of cue is a millisecond of your command we cannot hear.
+#
+# Soft sounds rather than crisp words. "Mm?" and "हम्म?" read as *listening*,
+# where "Yes?" reads as an answer to a question nobody asked — the difference
+# between a person looking up and a machine reporting for duty.
 CUES: dict[str, tuple[str, ...]] = {
-    "en": ("Yes?", "Mm?"),
-    "hi": ("हाँ?", "जी?"),
+    "en": ("Mm?", "Hm?", "Yes?"),
+    "hi": ("हम्म?", "जी?", "हाँ?"),
 }
 
-# Faster than the assistant's speaking voice, on purpose. A one-syllable
-# acknowledgement delivered at conversational pace is mostly attack and tail:
-# measured here, "Yes?" runs 472 ms at the normal rate and 382 ms at this one,
-# and the difference is 90 ms less of your command being thrown away.
-CUE_RATE = "+40%"
-# Part of the cache filename, so changing the rate above re-renders rather
-# than silently reusing clips recorded at the old one.
-_RATE_TAG = CUE_RATE.strip("+%")
+# Just under conversational pace. This was +40% — chosen to keep the cue short,
+# because the frames it occupies are dropped and a shorter cue discards less of
+# what you say next. It measured well and sounded wrong: a one-syllable
+# acknowledgement rushed by 40% is clipped and mechanical, which is the opposite
+# of the reassurance it exists to give. 90 ms of extra overlap is worth paying
+# for a sound that reads as a person rather than a beep.
+CUE_RATE = "-5%"
+
+# The cue should be quieter than a reply. It is not information, it is a nod.
+CUE_VOLUME = "-15%"
+
+# Every cue is levelled to this peak. The variants are rotated through, so one
+# being noticeably louder than the next is heard as a glitch rather than as
+# variety — measured, "हम्म?" came back 43% hotter than "Yes?" from the same
+# synthesiser at the same volume setting.
+CUE_PEAK = 0.42
+
+# Part of the cache filename, so changing how the cue is rendered re-renders
+# rather than silently reusing clips recorded the old way. Bumped when the
+# shaping below changes, not just when the rate does.
+_RATE_TAG = "soft2-" + CUE_RATE.strip("+-%")
 
 
 def chime(rate: int = RATE) -> np.ndarray:
@@ -62,13 +79,16 @@ def chime(rate: int = RATE) -> np.ndarray:
     audibly at both ends, and a click is the least reassuring sound a machine
     can make when you are trying to tell whether it heard you.
     """
-    notes = ((880.0, 0.06), (1174.7, 0.08))  # A5 then D6, a rising fourth
+    notes = ((587.3, 0.09), (783.99, 0.13))  # D5 then G5, the same rising fourth
     parts: list[np.ndarray] = []
     for frequency, seconds in notes:
         samples = int(rate * seconds)
         t = np.arange(samples) / rate
         envelope = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(samples) / max(1, samples - 1))
-        parts.append(np.sin(2 * np.pi * frequency * t) * envelope * 0.18)
+        # A touch of the octave above, at a tenth of the level. A pure sine reads
+        # as a test tone; one quiet partial is enough to read as an instrument.
+        tone = np.sin(2 * np.pi * frequency * t) + 0.1 * np.sin(4 * np.pi * frequency * t)
+        parts.append(tone * envelope * 0.11)
     return np.concatenate(parts).astype(np.float32)
 
 
@@ -108,7 +128,8 @@ class Acknowledger:
         from ..config import settings
         from ..tts import create_speaker
 
-        return create_speaker(settings.tts.model_copy(update={"rate": CUE_RATE}))
+        return create_speaker(settings.tts.model_copy(
+            update={"rate": CUE_RATE, "volume": CUE_VOLUME}))
 
     def _prepare_now(self) -> None:
         speaker = None
@@ -165,7 +186,7 @@ class Acknowledger:
             return None
         if rate != RATE:
             audio = _resample(audio, rate, RATE)
-        return _trim_silence(audio)
+        return _soften(_trim_silence(audio))
 
     # -- playback ----------------------------------------------------------
 
@@ -197,6 +218,39 @@ def _resample(audio: np.ndarray, source: int, target: int) -> np.ndarray:
     old = np.linspace(0.0, 1.0, audio.shape[0], endpoint=False)
     new = np.linspace(0.0, 1.0, count, endpoint=False)
     return np.interp(new, old, audio).astype(np.float32)
+
+
+def _soften(audio: np.ndarray, attack_ms: float = 25.0,
+            release_ms: float = 90.0) -> np.ndarray:
+    """Fade the cue in and out instead of switching it on.
+
+    Trimming the synthesiser's padding leaves the clip starting on the first
+    loud sample, so playback begins mid-waveform and the onset reads as a click
+    followed by a word — which is most of why the old cue sounded abrupt even
+    before the speech rate came down. A short attack and a longer release give
+    it the shape of something spoken rather than something triggered.
+
+    The release is the longer of the two on purpose: a sound that stops dead
+    feels curt, and this one is meant to feel like the beginning of listening.
+    """
+    if audio.size == 0:
+        return audio
+    out = audio.astype(np.float32).copy()
+
+    peak = float(np.abs(out).max())
+    if peak > 1e-6:
+        out *= CUE_PEAK / peak
+
+    attack = min(int(RATE * attack_ms / 1000), out.shape[0] // 2)
+    if attack > 1:
+        ramp = 0.5 - 0.5 * np.cos(np.linspace(0.0, np.pi, attack, dtype=np.float32))
+        out[:attack] *= ramp
+
+    release = min(int(RATE * release_ms / 1000), out.shape[0] // 2)
+    if release > 1:
+        ramp = 0.5 + 0.5 * np.cos(np.linspace(0.0, np.pi, release, dtype=np.float32))
+        out[-release:] *= ramp
+    return out
 
 
 def _trim_silence(audio: np.ndarray, floor: float = 0.01) -> np.ndarray:

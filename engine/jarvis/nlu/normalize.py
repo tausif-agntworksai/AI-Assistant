@@ -201,6 +201,16 @@ _FILLER = (
 _LEADING_FILLER = (
     "hey", "hi", "hello", "ok", "okay", "yo", "acha", "achha",
     "jarvis", "javis", "jaarvis", "jervis", "jarwis",
+    # Hindi request markers. "batao kitna baja hai" is "kitna baja hai" with a
+    # politeness word in front, and every time rule is anchored to the start of
+    # the utterance — so without this it fell through to the fuzzy matcher and
+    # came out as *get_battery* (69.8 against "battery kitni bachi hai"), which
+    # is asking the time and being told the charge level.
+    #
+    # Leading-only is the whole point. "mummy ko batao ki main aa raha hoon"
+    # needs its "batao": it is the verb the message rule matches on, and
+    # stripping it everywhere would leave "mummy ko ki main aa raha hoon".
+    "batao", "bata do", "bataiye", "batana", "bolo to", "ye batao",
 )
 
 

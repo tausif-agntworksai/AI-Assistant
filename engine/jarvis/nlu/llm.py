@@ -72,6 +72,11 @@ class BrainResult:
     #: Set when the failure is "nobody has given me a key yet", which the
     #: orchestrator answers by opening settings rather than by apologising.
     needs_key: bool = False
+    #: Which kind of failure, from `llm.base.ErrorKind`. The orchestrator needs
+    #: to tell "your wi-fi is down" from "your key is wrong" without reading
+    #: the English sentence in `error`, and a connection failure is also the
+    #: best evidence available about connectivity.
+    error_kind: str = ""
 
     @property
     def has_actions(self) -> bool:
@@ -181,11 +186,17 @@ class Brain:
             )
         except llm.LlmError as exc:
             log.error("%s request failed: %s", provider.id, exc)
-            return BrainResult(error=exc.friendly, latency=time.perf_counter() - t0)
+            return BrainResult(error=exc.friendly, error_kind=exc.kind,
+                               latency=time.perf_counter() - t0)
         except Exception as exc:  # noqa: BLE001 - the assistant must stay up
             log.exception("%s request failed unexpectedly", provider.id)
-            return BrainResult(error=f"{type(exc).__name__}: {exc}",
-                               latency=time.perf_counter() - t0)
+            from .. import net
+
+            return BrainResult(
+                error=f"{type(exc).__name__}: {exc}",
+                error_kind="network" if net.looks_like_connectivity(exc) else "other",
+                latency=time.perf_counter() - t0,
+            )
 
         latency = time.perf_counter() - t0
 

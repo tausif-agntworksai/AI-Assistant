@@ -116,7 +116,6 @@
 }
 .via.ai { background: var(--accent-soft); color: var(--accent); }
 
-.tally { color: var(--faint); font-variant-numeric: tabular-nums; }
 
 .msg .lang {
   font-size: 9.5px;

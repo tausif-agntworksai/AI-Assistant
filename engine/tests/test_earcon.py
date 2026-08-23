@@ -186,3 +186,61 @@ def test_leading_and_trailing_silence_is_trimmed():
     trimmed = earcon._trim_silence(padded)
     assert trimmed.shape[0] < padded.shape[0] // 2
     assert float(np.abs(trimmed).max()) == pytest.approx(0.3)
+
+
+# --- shaping: why the cue stopped sounding abrupt ---------------------------
+
+
+def test_the_cue_fades_in_rather_than_switching_on():
+    """Trimming the synthesiser's padding leaves the clip starting on its first
+    loud sample, so playback begins mid-waveform. That onset is heard as a click
+    followed by a word, and it was most of why the cue sounded curt even before
+    the speech rate came down."""
+    blunt = np.ones(RATE // 2, dtype=np.float32) * 0.4
+    shaped = earcon._soften(blunt)
+    assert abs(float(shaped[0])) < 0.01, "still starts at full level"
+    assert abs(float(shaped[-1])) < 0.01, "still stops dead"
+
+
+def test_the_release_is_longer_than_the_attack():
+    """A sound that stops abruptly feels curt, and this one exists to feel like
+    the beginning of listening rather than the end of a beep."""
+    flat = np.ones(RATE, dtype=np.float32) * 0.4
+    shaped = earcon._soften(flat)
+    quiet = np.abs(shaped) < 0.4 * 0.99
+    leading = int(np.argmin(quiet))
+    trailing = len(quiet) - int(np.argmin(quiet[::-1]))
+    assert (len(quiet) - trailing) > leading
+
+
+def test_every_variant_is_levelled_to_the_same_peak():
+    """The variants rotate, so one being louder than the next is heard as a
+    glitch rather than as variety. Measured, the Hindi cue came back 43% hotter
+    than the English one from the same synthesiser at the same volume."""
+    loud = np.ones(RATE // 2, dtype=np.float32) * 0.9
+    soft = np.ones(RATE // 2, dtype=np.float32) * 0.05
+    peaks = [float(np.abs(earcon._soften(clip)).max()) for clip in (loud, soft)]
+    assert peaks[0] == pytest.approx(peaks[1], abs=0.01)
+    assert peaks[0] == pytest.approx(earcon.CUE_PEAK, abs=0.01)
+
+
+def test_shaping_an_empty_clip_does_not_explode():
+    assert earcon._soften(np.zeros(0, dtype=np.float32)).size == 0
+
+
+def test_a_silent_clip_is_not_amplified_into_noise():
+    """Dividing by a peak of zero would turn a silent clip into whatever the
+    floating point gods decided."""
+    shaped = earcon._soften(np.zeros(1600, dtype=np.float32))
+    assert np.all(np.isfinite(shaped)) and float(np.abs(shaped).max()) == 0.0
+
+
+def test_the_cue_is_quieter_than_a_reply():
+    """It is a nod, not information."""
+    assert earcon.CUE_VOLUME.startswith("-")
+
+
+def test_the_cache_key_changes_when_the_shaping_does():
+    """Otherwise a machine that has run the old version keeps playing the old
+    cue forever, and the fix appears not to work."""
+    assert "soft" in earcon._RATE_TAG

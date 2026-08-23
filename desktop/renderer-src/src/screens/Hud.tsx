@@ -179,14 +179,6 @@ export function Hud() {
           <span>
             Hotkey <b>{engine.info?.hotkey ?? "Ctrl+Alt+J"}</b>
           </span>
-          {(engine.localTurns > 0 || engine.aiTurns > 0) && (
-            <span
-              className="tally"
-              title="How this session split between offline handling and the AI model"
-            >
-              {engine.localTurns} offline · {engine.aiTurns} AI
-            </span>
-          )}
           <span className="who truncate" title={account ?? ""}>
             {llm && !llm.has_key ? <Badge kind="warn">no AI key</Badge> : account}
           </span>

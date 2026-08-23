@@ -227,6 +227,31 @@ class AssistantConfig(BaseModel):
     followup_sec: float = 6.0
 
 
+class MessagingConfig(BaseModel):
+    """How "say hi to sana" turns into a sent message."""
+
+    #: Used whenever the user names no app. WhatsApp because that is what the
+    #: phrase means in practice here, but it is a setting rather than a constant
+    #: so it can be someone else's default.
+    default_app: Literal["whatsapp", "sms", "telegram", "signal", "slack"] = "whatsapp"
+
+    #: Whether to press send, or leave the draft open with the cursor in it.
+    #:
+    #: On by default, because "send hi to sana" asks for a message to be sent and
+    #: stopping one keystroke short is a strange place to stop. It is safe to
+    #: default on only because of the two gates around it: the command is
+    #: CRITICAL, so it is read back and confirmed before anything opens, and the
+    #: keystroke is only sent once the messaging app is confirmed to hold focus.
+    #: Turn it off to review every message before it goes.
+    auto_send: bool = True
+
+    #: How long to wait for the app's window to take focus before giving up on
+    #: pressing send. Generous: WhatsApp Desktop cold-starting is slow, and the
+    #: consequence of being impatient is a message left unsent, which the reply
+    #: then says.
+    focus_timeout_sec: float = 6.0
+
+
 class Settings(BaseModel):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     wake_word: WakeWordConfig = Field(default_factory=WakeWordConfig)
@@ -238,6 +263,7 @@ class Settings(BaseModel):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     assistant: AssistantConfig = Field(default_factory=AssistantConfig)
+    messaging: MessagingConfig = Field(default_factory=MessagingConfig)
 
 
 def bootstrap_config() -> None:

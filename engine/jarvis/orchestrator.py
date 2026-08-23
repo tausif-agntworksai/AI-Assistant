@@ -31,7 +31,7 @@ from typing import Any
 
 import numpy as np
 
-from . import winutil
+from . import net, winutil
 from .announce import set_handler as set_announce_handler
 from .audio.capture import AudioCapture, FrameAccumulator, RingBuffer, rms_level
 from .audio.earcon import Acknowledger
@@ -643,10 +643,32 @@ class Orchestrator:
                 understood=True,
             )
 
+        # Checked here rather than left to the provider's own timeout. Offline,
+        # the request would hang for however long the HTTP client waits and then
+        # surface as a connection error, so the user gets a long silence
+        # followed by something that sounds like a bug. This is immediate, and
+        # it says which half of the assistant still works.
+        if not net.is_online():
+            log.info("Brain skipped — no connectivity")
+            return Turn(
+                reply=("इसके लिए इंटरनेट चाहिए और अभी connection नहीं है। "
+                       "कंप्यूटर के काम — apps, volume, brightness, timer — "
+                       "सब चल रहे हैं।"
+                       if language.startswith("hi")
+                       else "That one needs the internet, and there's no "
+                            "connection right now. Everything on your computer "
+                            "still works — apps, volume, brightness, timers."),
+                understood=True, via="local",
+            )
+
         bus.set_state(State.THINKING)
         result = brain.interpret(text, language, self._live_context())
 
         if result.error:
+            if result.error_kind == "network":
+                # Better evidence about the connection than any probe, and it
+                # arrived for free. The next skill that cares re-checks.
+                net.note_failure()
             bus.publish(Event.ERROR, message=result.error)
             return Turn(
                 reply=("अभी दिमाग़ काम नहीं कर रहा।" if language.startswith("hi")

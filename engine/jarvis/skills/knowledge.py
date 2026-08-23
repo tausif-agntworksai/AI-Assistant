@@ -24,6 +24,9 @@ log = logging.getLogger(__name__)
         "who invented the telephone", "explain quantum computing simply",
         "python kya hota hai", "tell me a joke", "ek joke sunao",
     ],
+    needs_network=True,
+    network_label="Answering questions like that",
+    network_label_hi="Aise sawaal ka jawab dena",
 )
 def answer_question(question: str, ctx: SkillContext = None) -> object:
     from ..nlu.llm import brain
@@ -52,6 +55,9 @@ def answer_question(question: str, ctx: SkillContext = None) -> object:
         "translate good morning to hindi", "how do you say thank you in hindi",
         "iska english matlab batao", "hindi me bolo how are you",
     ],
+    needs_network=True,
+    network_label="Translation",
+    network_label_hi="Translate karna",
 )
 def translate_text(text: str, target_language: str = "", ctx: SkillContext = None) -> object:
     from ..nlu.llm import brain
@@ -86,6 +92,9 @@ def translate_text(text: str, target_language: str = "", ctx: SkillContext = Non
         "summarize the clipboard", "summarise what i copied",
         "clipboard ka summary do", "jo copy kiya hai uska matlab batao",
     ],
+    needs_network=True,
+    network_label="Summarising",
+    network_label_hi="Summary banana",
 )
 def summarize_clipboard(ctx: SkillContext = None) -> object:
     import pyperclip
@@ -125,6 +134,9 @@ def summarize_clipboard(ctx: SkillContext = None) -> object:
         "what's the weather", "aaj mausam kaisa hai", "weather in delhi",
         "mumbai ka mausam batao", "is it going to rain",
     ],
+    needs_network=True,
+    network_label="The weather",
+    network_label_hi="Mausam",
 )
 def get_weather(city: str = "", ctx: SkillContext = None) -> object:
     import requests
@@ -176,6 +188,9 @@ def get_weather(city: str = "", ctx: SkillContext = None) -> object:
         "what's in the news", "read me the headlines", "aaj ki khabar batao",
         "technology news", "khabrein sunao",
     ],
+    needs_network=True,
+    network_label="The news",
+    network_label_hi="Khabrein",
 )
 def get_news(topic: str = "", ctx: SkillContext = None) -> object:
     import xml.etree.ElementTree as ET

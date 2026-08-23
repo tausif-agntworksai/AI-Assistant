@@ -32,7 +32,7 @@ _MODULES = (
     "apps", "web", "system", "windows_mgr",
     "media", "volume", "display", "device",
     "files", "productivity", "messaging", "knowledge",
-    "social",
+    "social", "camera", "calls",
 )
 
 _loaded = False

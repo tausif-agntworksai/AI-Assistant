@@ -47,6 +47,13 @@ WMI>=1.5.1; sys_platform == "win32"
 pyobjc-core>=10.0; sys_platform == "darwin"
 pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
 
+# --- Camera ---
+# Headless rather than the full build: the engine only ever grabs a frame and
+# writes a JPEG, so the Qt GUI stack in `opencv-python` would be ~30 MB of
+# installer for nothing. The wheel is abi3, so it works on 3.14.
+# Imported lazily inside `take_photo`, so its absence costs that one skill.
+opencv-python-headless>=4.10
+
 # --- Bilingual matching ---
 rapidfuzz>=3.10
 indic-transliteration>=2.3.0
