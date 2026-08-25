@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      script-src is 'self', not 'unsafe-inline'. A Vite build emits external
+      module scripts, which the old inline-only policy forbade — so this is both
+      required and strictly safer than what it replaces. style-src keeps
+      'unsafe-inline' because React sets style attributes for the level meter
+      and the orb ring.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src http://127.0.0.1:* ws://127.0.0.1:*;"
+    />
+    <meta name="color-scheme" content="dark light" />
+    <title>Jarvis</title>
+    <script type="module" crossorigin src="./assets/index-SbY_uoG3.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/theme-D2jukYiC.js">
+    <link rel="modulepreload" crossorigin href="./assets/useEngine-Bqk9EUtr.js">
+    <link rel="stylesheet" crossorigin href="./assets/theme-DX4at7Lg.css">
+    <link rel="stylesheet" crossorigin href="./assets/index-DgDuOFvb.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
