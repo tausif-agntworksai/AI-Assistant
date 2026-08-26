@@ -102,8 +102,14 @@ class EdgeSpeaker(Speaker):
         voice = self.voice_for(language)
         key = (text, voice)
         with self._cache_lock:
-            if key in self._cache:
-                return self._cache[key]
+            cached = self._cache.pop(key, None)
+            if cached is not None:
+                # Re-insert so eviction is least-recently-used rather than
+                # first-in. The wake-word replies are cached at startup, so a
+                # first-in policy would evict exactly the phrases that must
+                # stay instant as soon as 64 other short replies accumulated.
+                self._cache[key] = cached
+                return cached
 
         mp3 = asyncio.run(self._synth_async(text, voice))
         audio, rate = decode_audio(mp3)

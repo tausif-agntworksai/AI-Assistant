@@ -24,6 +24,7 @@ Two things here exist specifically so nobody has to repeat themselves:
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from dataclasses import dataclass
@@ -92,6 +93,8 @@ class Orchestrator:
         self._awaiting_confirmation = False
         self._want_audio = False
         self._followup_until = 0.0
+        #: Last acknowledgement spoken per language, so the next one differs.
+        self._last_ack: dict[str, str] = {}
         self._misses = 0
         self._recent_peak = 0.0
         self._quiet_warned = False
@@ -190,16 +193,18 @@ class Orchestrator:
         synthesize = getattr(self.speaker, "synthesize", None)
         if not callable(synthesize):
             return
-        for phrase, language in (
-            (self.cfg.wake_word.ack_text_en, "en"),
-            (self.cfg.wake_word.ack_text_hi, "hi"),
-        ):
-            if not phrase.strip():
-                continue
-            try:
-                synthesize(phrase, language)
-            except Exception as exc:  # noqa: BLE001 - a cold cache is survivable
-                log.debug("Could not pre-render %r: %s", phrase, exc)
+        # Every phrase, not just one: which gets picked is random, so any that
+        # isn't cached would be the slow one at the worst moment.
+        warmed = 0
+        for language in ("en", "hi"):
+            for phrase in self.cfg.wake_word.ack_texts(language):
+                try:
+                    synthesize(phrase, language)
+                    warmed += 1
+                except Exception as exc:  # noqa: BLE001 - a cold cache is survivable
+                    log.debug("Could not pre-render %r: %s", phrase, exc)
+        if warmed:
+            log.info("Wake-word replies ready (%d phrases)", warmed)
 
     def stop(self) -> None:
         self._stop_audio()
@@ -444,12 +449,8 @@ class Orchestrator:
                 return self._play_chime()
 
             language = self.last_language
-            phrase = (
-                self.cfg.wake_word.ack_text_hi
-                if language.startswith("hi")
-                else self.cfg.wake_word.ack_text_en
-            )
-            if not phrase.strip():
+            phrase = self._pick_acknowledgement(language)
+            if not phrase:
                 return False
             bus.set_state(State.SPEAKING)
             self.speaker.speak(phrase, language)
@@ -457,6 +458,25 @@ class Orchestrator:
         except Exception as exc:  # noqa: BLE001 - never miss a command over a chirp
             log.debug("Acknowledgement failed: %s", exc)
             return False
+
+    def _pick_acknowledgement(self, language: str) -> str:
+        """One of the configured replies, never the same one twice running.
+
+        Repeating verbatim is what makes an assistant sound like a recording;
+        an immediate repeat is the only case anyone actually notices, so that
+        is all this guards against.
+        """
+        choices = self.cfg.wake_word.ack_texts(language)
+        if not choices:
+            return ""
+        if len(choices) > 1:
+            previous = self._last_ack.get(language[:2])
+            fresh = [c for c in choices if c != previous]
+            if fresh:
+                choices = fresh
+        phrase = random.choice(choices)
+        self._last_ack[language[:2]] = phrase
+        return phrase
 
     def _play_chime(self) -> bool:
         """A 140 ms rising blip. Generated, so there is no asset to ship."""

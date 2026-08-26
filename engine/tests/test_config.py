@@ -45,3 +45,65 @@ def test_boundary_ports_are_accepted(server, monkeypatch):
     for value in ("1", "65535"):
         monkeypatch.setenv("JARVIS_PORT", value)
         assert server.resolved_port == int(value)
+
+
+# --- wake-word acknowledgement ---------------------------------------------
+
+
+from jarvis.config import WakeWordConfig  # noqa: E402
+
+
+def test_acknowledgements_default_to_a_pool():
+    wake = WakeWordConfig()
+    assert len(wake.ack_texts("en")) > 1
+    assert len(wake.ack_texts("hi")) > 1
+
+
+def test_a_bare_string_still_works():
+    """The setting used to be one string; an old config.yaml must still load."""
+    wake = WakeWordConfig(ack_text_en="Yes?", ack_text_hi="जी?")
+    assert wake.ack_texts("en") == ["Yes?"]
+    assert wake.ack_texts("hi") == ["जी?"]
+
+
+def test_blank_entries_are_dropped():
+    wake = WakeWordConfig(ack_text_en=["Yes?", "", "   "])
+    assert wake.ack_texts("en") == ["Yes?"]
+
+
+def test_no_acknowledgement_uses_non_lexical_sounds():
+    """"Mm-hmm" rendered as an unintelligible mumble.
+
+    Neural voices are trained on written language and have no reliable
+    pronunciation for sounds that aren't words, so every phrase must contain
+    at least one real letter-bearing word.
+    """
+    import re
+
+    wake = WakeWordConfig()
+    for phrase in wake.ack_texts("en"):
+        assert re.search(r"[A-Za-z]{2,}", phrase), phrase
+        assert "mm-hmm" not in phrase.lower()
+
+
+def test_rotation_never_repeats_immediately():
+    """Hearing the same phrase twice running is what sounds like a recording."""
+    from jarvis.orchestrator import Orchestrator
+
+    o = Orchestrator()  # no start() — this touches no audio device
+    picks = [o._pick_acknowledgement("en") for _ in range(40)]
+    assert not any(a == b for a, b in zip(picks, picks[1:]))
+    # ...and it should actually use the variety it has.
+    assert len(set(picks)) > 1
+
+
+def test_rotation_survives_a_single_phrase():
+    """With one phrase configured there is nothing to alternate with."""
+    from jarvis.orchestrator import Orchestrator
+
+    o = Orchestrator()
+    o.cfg.wake_word.ack_text_en = ["Yes?"]
+    try:
+        assert [o._pick_acknowledgement("en") for _ in range(3)] == ["Yes?"] * 3
+    finally:
+        o.cfg.wake_word.ack_text_en = WakeWordConfig().ack_text_en

@@ -11,7 +11,7 @@ from typing import Literal
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import paths
 
@@ -32,11 +32,39 @@ class WakeWordConfig(BaseModel):
     #: for a while, but the field was missing here — so pydantic dropped the
     #: setting and the acknowledgement never made a sound.
     acknowledge: Literal["voice", "chime", "none"] = "voice"
-    #: What the spoken acknowledgement says. Kept short on purpose: it plays
-    #: before listening starts, so every extra syllable is a syllable the user
-    #: has to wait through before speaking.
-    ack_text_en: str = "Mm-hmm?"
-    ack_text_hi: str = "जी?"
+    #: What the spoken acknowledgement says — one is picked at random each
+    #: time, so it doesn't feel like a recording.
+    #:
+    #: Every entry is a real word or phrase on purpose. "Mm-hmm" was the first
+    #: attempt and came out as an unintelligible mumble: neural voices are
+    #: trained on written language, and non-lexical sounds have no spelling
+    #: they can pronounce reliably.
+    #:
+    #: Keep them short — this plays before the microphone opens, so each
+    #: syllable is one the user waits through.
+    ack_text_en: list[str] = Field(
+        default_factory=lambda: ["Yes?", "I'm listening.", "Go ahead.", "I'm here."]
+    )
+    #: Feminine forms, to match the female Hindi voice.
+    ack_text_hi: list[str] = Field(
+        default_factory=lambda: ["जी?", "जी बोलिए.", "हाँ जी?", "सुन रही हूँ."]
+    )
+
+    @field_validator("ack_text_en", "ack_text_hi", mode="before")
+    @classmethod
+    def _accept_a_bare_string(cls, value: object) -> object:
+        """Tolerate `ack_text_en: "Yes?"` as well as a list.
+
+        The setting used to be a single string, and a config.yaml written
+        against that shouldn't stop the assistant from starting.
+        """
+        if isinstance(value, str):
+            return [value]
+        return value
+
+    def ack_texts(self, language: str) -> list[str]:
+        texts = self.ack_text_hi if (language or "").startswith("hi") else self.ack_text_en
+        return [t for t in texts if t and t.strip()]
 
 
 class VadConfig(BaseModel):
