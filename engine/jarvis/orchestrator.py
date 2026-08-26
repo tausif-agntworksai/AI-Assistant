@@ -175,6 +175,31 @@ class Orchestrator:
             self.transcriber.warmup()
         except Exception as exc:  # noqa: BLE001
             log.warning("Speech model warmup failed: %s", exc)
+        self._warm_acknowledgement()
+
+    def _warm_acknowledgement(self) -> None:
+        """Synthesize the wake-word replies now, while nobody is waiting.
+
+        The acknowledgement plays *before* the microphone opens, so paying for
+        a cold network round-trip on the first "hey jarvis" would mean a
+        multi-second wait at exactly the wrong moment. Doing it at startup
+        means the first one is served from cache like every one after it.
+        """
+        if self.cfg.wake_word.acknowledge != "voice" or self.speaker is None:
+            return
+        synthesize = getattr(self.speaker, "synthesize", None)
+        if not callable(synthesize):
+            return
+        for phrase, language in (
+            (self.cfg.wake_word.ack_text_en, "en"),
+            (self.cfg.wake_word.ack_text_hi, "hi"),
+        ):
+            if not phrase.strip():
+                continue
+            try:
+                synthesize(phrase, language)
+            except Exception as exc:  # noqa: BLE001 - a cold cache is survivable
+                log.debug("Could not pre-render %r: %s", phrase, exc)
 
     def stop(self) -> None:
         self._stop_audio()
@@ -344,7 +369,13 @@ class Orchestrator:
                 if self._wake_available:
                     for frame in ww_frames.push(block):
                         if self.wake.triggered(frame):
-                            self._acknowledge()
+                            if self._acknowledge():
+                                # We just spoke. Everything buffered is our own
+                                # voice, and seeding the segmenter with it would
+                                # have the assistant transcribe itself.
+                                self.capture.drain()
+                                preroll.clear()
+                                ww_frames.reset()
                             self._begin_listening(preroll, vad_frames)
                             listening = True
                             break
@@ -390,9 +421,55 @@ class Orchestrator:
         preroll.clear()
         bus.set_state(State.LISTENING, follow_up=follow_up)
 
-    def _acknowledge(self) -> None:
-        """A short cue so the user knows the wake word landed."""
+    def _acknowledge(self) -> bool:
+        """Answer the wake word, so the user knows they were heard.
+
+        Returns True if it made a sound — the caller then drops the pre-roll,
+        because that buffer now holds our own voice rather than the user's.
+
+        Deliberately synchronous. Speaking on a worker thread would overlap
+        the user's first words with our own, and with no echo cancellation the
+        microphone would transcribe both. A short phrase costs ~400 ms, and
+        after the first one it is served from the TTS cache, so the wait is
+        local and consistent rather than a network round-trip every time.
+        """
         bus.publish(Event.LOG, message="wake word detected")
+
+        mode = self.cfg.wake_word.acknowledge
+        if mode == "none" or self.speaker is None:
+            return False
+
+        try:
+            if mode == "chime":
+                return self._play_chime()
+
+            language = self.last_language
+            phrase = (
+                self.cfg.wake_word.ack_text_hi
+                if language.startswith("hi")
+                else self.cfg.wake_word.ack_text_en
+            )
+            if not phrase.strip():
+                return False
+            bus.set_state(State.SPEAKING)
+            self.speaker.speak(phrase, language)
+            return True
+        except Exception as exc:  # noqa: BLE001 - never miss a command over a chirp
+            log.debug("Acknowledgement failed: %s", exc)
+            return False
+
+    def _play_chime(self) -> bool:
+        """A 140 ms rising blip. Generated, so there is no asset to ship."""
+        rate = 24000
+        duration = 0.14
+        t = np.linspace(0.0, duration, int(rate * duration), endpoint=False)
+        # Two soft partials sliding upward read as friendly rather than alarm-like.
+        tone = 0.5 * np.sin(2 * np.pi * (620 + 300 * t / duration) * t)
+        tone += 0.2 * np.sin(2 * np.pi * (1240 + 600 * t / duration) * t)
+        # Raised-cosine envelope: an abrupt edge would click.
+        envelope = np.sin(np.pi * np.linspace(0.0, 1.0, t.size)) ** 1.5
+        self.player.play((tone * envelope * 0.28).astype(np.float32), rate)
+        return True
 
     def _open_followup(self) -> None:
         """Arm the follow-up so the listen loop picks it up on its next block.

@@ -28,6 +28,15 @@ class WakeWordConfig(BaseModel):
     model: str = "hey_jarvis"
     threshold: float = 0.5
     cooldown_sec: float = 2.0
+    #: What you hear when the wake word fires. config.yaml has documented this
+    #: for a while, but the field was missing here — so pydantic dropped the
+    #: setting and the acknowledgement never made a sound.
+    acknowledge: Literal["voice", "chime", "none"] = "voice"
+    #: What the spoken acknowledgement says. Kept short on purpose: it plays
+    #: before listening starts, so every extra syllable is a syllable the user
+    #: has to wait through before speaking.
+    ack_text_en: str = "Mm-hmm?"
+    ack_text_hi: str = "जी?"
 
 
 class VadConfig(BaseModel):
@@ -80,9 +89,15 @@ class SttConfig(BaseModel):
 
 class TtsConfig(BaseModel):
     backend: Literal["edge", "sapi", "none"] = "edge"
-    voice_hi: str = "hi-IN-MadhurNeural"
-    voice_en: str = "en-IN-NeerjaNeural"
-    rate: str = "+10%"
+    # One persona in both languages: Swara and Neerja are both warm female
+    # voices. The old pairing was a male Hindi voice with a female English one,
+    # which made the assistant sound like two different people.
+    voice_hi: str = "hi-IN-SwaraNeural"
+    voice_en: str = "en-IN-NeerjaExpressiveNeural"
+    # Prosody. `+10%` read as brisk and clipped; slightly under normal speed
+    # with a touch of lift sounds unhurried and friendly instead.
+    rate: str = "-4%"
+    pitch: str = "+3Hz"
     volume: str = "+0%"
     barge_in: bool = True
 

@@ -34,6 +34,7 @@ def create_speaker(cfg=None, player=None) -> Speaker:
                 voice_en=cfg.voice_en,
                 rate=cfg.rate,
                 volume=cfg.volume,
+                pitch=getattr(cfg, "pitch", "+0Hz"),
                 player=player,
             )
         except Exception as exc:  # noqa: BLE001

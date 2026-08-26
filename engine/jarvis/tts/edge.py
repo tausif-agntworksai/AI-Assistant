@@ -28,22 +28,50 @@ _CACHE_MAX_CHARS = 60
 _CACHE_MAX_ENTRIES = 64
 
 
+def trim_silence(audio: np.ndarray, rate: int, pad_ms: int = 30) -> np.ndarray:
+    """Strip the silence Edge pads onto every clip.
+
+    Measured on this voice: "Mm-hmm?" comes back as 1.78 s of audio holding
+    0.58 s of speech — a full second of trailing nothing. For a wake-word
+    acknowledgement that silence is dead time before the microphone opens, and
+    on ordinary replies it is a pause before the assistant will take the next
+    instruction. Only the ends are touched, so pauses between sentences stay.
+    """
+    if audio.size == 0:
+        return audio
+
+    peak = float(np.abs(audio).max())
+    if peak <= 0.0:
+        return audio
+
+    loud = np.flatnonzero(np.abs(audio) > peak * 0.02)
+    if loud.size == 0:
+        return audio
+
+    pad = int(rate * pad_ms / 1000)
+    start = max(0, int(loud[0]) - pad)
+    end = min(audio.shape[0], int(loud[-1]) + pad)
+    return audio[start:end]
+
+
 class EdgeSpeaker(Speaker):
     name = "edge-tts"
     available = True
 
     def __init__(
         self,
-        voice_hi: str = "hi-IN-MadhurNeural",
-        voice_en: str = "en-IN-NeerjaNeural",
-        rate: str = "+10%",
+        voice_hi: str = "hi-IN-SwaraNeural",
+        voice_en: str = "en-IN-NeerjaExpressiveNeural",
+        rate: str = "-4%",
         volume: str = "+0%",
+        pitch: str = "+3Hz",
         player: AudioPlayer | None = None,
     ) -> None:
         self.voice_hi = voice_hi
         self.voice_en = voice_en
         self.rate = rate
         self.volume = volume
+        self.pitch = pitch
         self.player = player or AudioPlayer()
         self._cache: dict[tuple[str, str], tuple[np.ndarray, int]] = {}
         self._cache_lock = threading.Lock()
@@ -57,7 +85,9 @@ class EdgeSpeaker(Speaker):
     async def _synth_async(self, text: str, voice: str) -> bytes:
         import edge_tts
 
-        comm = edge_tts.Communicate(text, voice, rate=self.rate, volume=self.volume)
+        comm = edge_tts.Communicate(
+            text, voice, rate=self.rate, volume=self.volume, pitch=self.pitch
+        )
         buf = bytearray()
         async for chunk in comm.stream():
             if chunk["type"] == "audio":
@@ -77,6 +107,7 @@ class EdgeSpeaker(Speaker):
 
         mp3 = asyncio.run(self._synth_async(text, voice))
         audio, rate = decode_audio(mp3)
+        audio = trim_silence(audio, rate)
 
         if len(text) <= _CACHE_MAX_CHARS:
             with self._cache_lock:
