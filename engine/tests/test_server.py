@@ -113,6 +113,38 @@ def test_a_web_page_origin_is_refused_even_with_the_token(client):
     assert response.status_code == 403
 
 
+@pytest.mark.parametrize("origin", ["null", "file://"])
+def test_both_shapes_of_the_file_origin_are_allowed(client, origin):
+    """Chromium labels a file:// page two different ways.
+
+    `fetch()` from it sends `Origin: null`, but the WebSocket handshake sends
+    `Origin: file://`. Allowing only "null" refused every HUD socket while
+    HTTP kept working, so the app retried forever against a healthy engine.
+    """
+    assert client.get("/status", headers={**AUTH, "Origin": origin}).status_code == 200
+
+
+@pytest.mark.parametrize("origin", ["null", "file://"])
+def test_the_websocket_accepts_both_file_origins(client, origin):
+    with client.websocket_connect(
+        "/ws", subprotocols=[WS_PROTOCOL, API_TOKEN], headers={"Origin": origin}
+    ) as ws:
+        assert ws.receive_json()["type"] == "state"
+
+
+def test_the_websocket_still_refuses_a_web_page_origin(client):
+    """Widening the allow-list must not have opened it to real websites."""
+    from starlette.websockets import WebSocketDisconnect
+
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(
+            "/ws",
+            subprotocols=[WS_PROTOCOL, API_TOKEN],
+            headers={"Origin": "https://evil.example"},
+        ) as ws:
+            ws.receive_json()
+
+
 def test_commands_are_refused_while_locked(client, monkeypatch):
     """Launched by the desktop app, an unlocked session is what opens the door."""
     monkeypatch.setenv("JARVIS_REQUIRE_SESSION", "1")

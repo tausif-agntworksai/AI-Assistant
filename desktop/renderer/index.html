@@ -358,7 +358,25 @@
     if (ev.type === "action" || ev.type === "confirm_result") loadActivity();
     // A quiet or closed microphone only becomes apparent after a turn, so
     // re-read the diagnosis whenever one finishes.
-    if (ev.type === "transcript" || ev.type === "error") loadStatus();
+    //
+    // `state` is in here for a race at startup: the socket opens, the session
+    // unlocks and the microphone opens all within the same second, so the
+    // status read on connect can catch the mic still closed and leave
+    // "Microphone closed — audio disabled" on screen while the engine is
+    // plainly listening. Re-reading on the next state change corrects it.
+    if (ev.type === "transcript" || ev.type === "error" || ev.type === "state") {
+      scheduleStatusRefresh();
+    }
+  }
+
+  /** Coalesces status reads — `state` fires several times per utterance. */
+  let statusTimer = null;
+  function scheduleStatusRefresh() {
+    if (statusTimer) return;
+    statusTimer = setTimeout(() => {
+      statusTimer = null;
+      loadStatus();
+    }, 800);
   }
 
   function formatArgs(args) {

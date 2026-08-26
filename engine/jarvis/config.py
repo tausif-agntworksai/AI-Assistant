@@ -117,6 +117,34 @@ class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8756
 
+    @property
+    def resolved_port(self) -> int:
+        """The port to actually bind.
+
+        The desktop app picks a free port before spawning us and passes it in
+        JARVIS_PORT — it may not be 8756 if something else already holds that.
+        Ignoring it means the app health-checks a port nothing is listening on
+        and waits out its whole timeout, which looks like the engine never
+        starting.
+        """
+        raw = os.environ.get("JARVIS_PORT", "").strip()
+        if raw:
+            try:
+                chosen = int(raw)
+            except ValueError:
+                log_config_warning("JARVIS_PORT is not a number: %r" % raw)
+            else:
+                if 1 <= chosen <= 65535:
+                    return chosen
+                log_config_warning("JARVIS_PORT out of range: %d" % chosen)
+        return self.port
+
+
+def log_config_warning(message: str) -> None:
+    import logging
+
+    logging.getLogger(__name__).warning("%s — using config.yaml instead", message)
+
 
 class SecurityConfig(BaseModel):
     """Whether the engine refuses to listen until someone has signed in.

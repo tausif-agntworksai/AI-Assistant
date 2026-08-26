@@ -42,11 +42,25 @@ log = logging.getLogger(__name__)
 # query field, which turned POST /command into a 422 and the WebSocket route
 # into a 403 handshake rejection.
 
-# The HUD is an Electron page loaded from disk, so its requests carry
-# `Origin: null`. That is the only browser origin allowed, and it still has to
-# present the token — an origin check alone would be worth nothing, since a
-# sandboxed iframe on any site also reports `null`.
+# The HUD is an Electron page loaded from disk, and Chromium does not label
+# that one way. A `fetch()` from a file:// page sends `Origin: null`, but the
+# WebSocket handshake from the same page sends `Origin: file://`. Accepting
+# only "null" refused every HUD socket while HTTP kept working, so the app sat
+# retrying forever against an engine that was up and healthy.
+#
+# Both still have to present the token — an origin check alone would be worth
+# nothing, since a sandboxed iframe on any site also reports `null`.
 FILE_ORIGIN = "null"
+FILE_ORIGINS = frozenset({"null", "file://"})
+
+
+def origin_allowed(origin: str | None) -> bool:
+    """True when a request may proceed on origin grounds alone.
+
+    No `Origin` header at all is the desktop app's main process calling us
+    with Node's fetch, which no web page can imitate.
+    """
+    return origin is None or origin in FILE_ORIGINS
 
 # WebSocket handshakes can't carry an Authorization header from a browser, so
 # the token rides in the subprotocol list instead of a query string — query
@@ -95,7 +109,7 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
     # Only the file:// HUD, and only for the two headers it actually sends.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[FILE_ORIGIN],
+        allow_origins=sorted(FILE_ORIGINS),
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
         max_age=600,
@@ -108,7 +122,7 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
         # A browser page from a real website must never get through, even in
         # the hypothetical where it has somehow learned the token.
         origin = request.headers.get("origin")
-        if origin is not None and origin != FILE_ORIGIN:
+        if not origin_allowed(origin):
             log.warning("Rejected a request from origin %r", origin[:80])
             return JSONResponse({"error": "forbidden origin"}, status_code=403)
 
@@ -269,7 +283,7 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
             if p.strip()
         ]
         origin = ws.headers.get("origin")
-        if (origin is not None and origin != FILE_ORIGIN) or len(offered) < 2 \
+        if not origin_allowed(origin) or len(offered) < 2 \
                 or offered[0] != WS_PROTOCOL or not token_matches(offered[1]):
             log.warning("Rejected a WebSocket handshake (origin=%r)", (origin or "")[:80])
             await ws.close(code=1008)
@@ -331,9 +345,9 @@ def serve(orchestrator) -> None:  # noqa: ANN001
     config = uvicorn.Config(
         app,
         host=host,
-        port=settings.server.port,
+        port=settings.server.resolved_port,
         log_level="warning",
         access_log=False,
     )
-    log.info("HUD API on http://%s:%d (token required)", host, settings.server.port)
+    log.info("HUD API on http://%s:%d (token required)", host, settings.server.resolved_port)
     uvicorn.Server(config).run()
