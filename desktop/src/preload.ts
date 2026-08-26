@@ -10,7 +10,22 @@
  * localhost API directly. That is a deliberate line: our own page may hold it,
  * a page on some website can't reach this bridge at all.
  */
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+
+/**
+ * Subscribes to a main-process channel and hands back a disposer.
+ *
+ * The disposer is the point. These used to return `undefined`, which is fine
+ * for a page that lives until it navigates away — but a React effect's cleanup
+ * has nothing to call, so every remount adds another listener and the same log
+ * line arrives two, three, four times. Returning the unsubscribe function makes
+ * `useEffect(() => bridge.onLog(...), [])` correct by construction.
+ */
+function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
+  const handler = (_event: IpcRendererEvent, payload: T) => cb(payload);
+  ipcRenderer.on(channel, handler);
+  return () => ipcRenderer.removeListener(channel, handler);
+}
 
 export interface EngineInfo {
   url: string;
@@ -27,35 +42,28 @@ export interface AuthStatus {
     | "unconfigured"
     | "signed-out"
     | "needs-verification"
-    | "needs-approval"
-    | "rejected"
     | "needs-2fa"
     | "offline-expired"
     | "ready";
   email: string;
   uid: string;
-  isAdmin: boolean;
   online: boolean;
+  codeReason: "sign-in" | "enroll" | null;
   message?: string;
 }
 
 contextBridge.exposeInMainWorld("jarvis", {
   info: (): Promise<EngineInfo> => ipcRenderer.invoke("engine:info"),
   listen: (): Promise<void> => ipcRenderer.invoke("engine:listen"),
+  minimize: (): Promise<void> => ipcRenderer.invoke("window:minimize"),
   hide: (): Promise<void> => ipcRenderer.invoke("window:hide"),
   quit: (): Promise<void> => ipcRenderer.invoke("app:quit"),
   pin: (pinned: boolean): Promise<boolean> => ipcRenderer.invoke("window:pin", pinned),
   openLog: (): Promise<string> => ipcRenderer.invoke("app:openLog"),
 
-  onStatus: (cb: (payload: unknown) => void) => {
-    ipcRenderer.on("engine:status", (_e, payload) => cb(payload));
-  },
-  onLog: (cb: (line: string) => void) => {
-    ipcRenderer.on("engine:log", (_e, line) => cb(line));
-  },
-  onError: (cb: (message: string) => void) => {
-    ipcRenderer.on("engine:error", (_e, message) => cb(message));
-  },
+  onStatus: (cb: (payload: unknown) => void) => subscribe("engine:status", cb),
+  onLog: (cb: (line: string) => void) => subscribe<string>("engine:log", cb),
+  onError: (cb: (message: string) => void) => subscribe<string>("engine:error", cb),
 });
 
 contextBridge.exposeInMainWorld("auth", {
@@ -74,9 +82,44 @@ contextBridge.exposeInMainWorld("auth", {
     ipcRenderer.invoke("auth:resetPassword", email),
   recheck: (): Promise<AuthStatus> => ipcRenderer.invoke("auth:recheck"),
   signOut: (): Promise<AuthStatus> => ipcRenderer.invoke("auth:signOut"),
-  onChange: (cb: (status: AuthStatus) => void) => {
-    ipcRenderer.on("auth:status", (_e, status) => cb(status));
-  },
+  onChange: (cb: (status: AuthStatus) => void) => subscribe<AuthStatus>("auth:status", cb),
+});
+
+export interface KeySummary {
+  provider: string;
+  model: string;
+  hasKey: boolean;
+}
+
+export interface ModelOption {
+  id: string;
+  label: string;
+  speed: string;
+  supports_tools: boolean;
+}
+
+/**
+ * The AI-model surface. Deliberately write-only for secrets: a key can be set
+ * and can be checked, and there is no call anywhere here that reads one back.
+ */
+contextBridge.exposeInMainWorld("ai", {
+  info: () => ipcRenderer.invoke("ai:info"),
+  setLlm: (provider: string, model: string, apiKey?: string) =>
+    ipcRenderer.invoke("ai:setLlm", provider, model, apiKey),
+  setSpeech: (provider: string, apiKey?: string) =>
+    ipcRenderer.invoke("ai:setSpeech", provider, apiKey),
+  validate: (
+    provider: string,
+    apiKey: string,
+    model?: string
+  ): Promise<{ ok: boolean; error?: string; model?: string }> =>
+    ipcRenderer.invoke("ai:validate", provider, apiKey, model),
+  models: (
+    provider: string,
+    apiKey?: string
+  ): Promise<{ models: ModelOption[]; error?: string }> =>
+    ipcRenderer.invoke("ai:models", provider, apiKey),
+  forget: () => ipcRenderer.invoke("ai:forget"),
 });
 
 contextBridge.exposeInMainWorld("consent", {

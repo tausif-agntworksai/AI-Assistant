@@ -57,23 +57,23 @@ def create_transcriber(cfg=None) -> Transcriber:
     else:
         log.info("Speech recognition: local %s (no escalation)", cfg.model)
 
-    if not cfg.cloud_api_key:
-        if cfg.backend == "cloud":
-            log.warning("stt.backend is 'cloud' but CLOUD_STT_API_KEY is unset — "
-                        "staying local")
-        return local
+    # The cloud tier is always wired up and always idle until a key exists.
+    # Attaching it lazily rather than at construction time is what lets someone
+    # paste a Deepgram key in the settings screen and have it take effect on the
+    # next utterance, instead of after a restart and two model reloads.
+    from .cloud import FallbackTranscriber, LazyCloudTranscriber
+    from .selection import selection
 
-    try:
-        from .cloud import CloudTranscriber, FallbackTranscriber
-
-        cloud = CloudTranscriber(cfg.cloud_provider, cfg.cloud_api_key, cfg.language)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Cloud speech recognition unavailable (%s) — staying local", exc)
-        return local
+    cloud = LazyCloudTranscriber()
 
     if cfg.backend == "cloud":
-        log.info("Speech recognition: %s (cloud only)", cloud.name)
+        if not selection.available:
+            log.warning("stt.backend is 'cloud' but no speech key is set — staying local")
+            return local
+        log.info("Speech recognition: cloud only (%s)", selection.active_provider)
         return cloud
 
-    log.info("Speech recognition: local, falling back to %s", cloud.name)
+    if selection.available:
+        log.info("Speech recognition: local, falling back to %s on failure",
+                 selection.active_provider)
     return FallbackTranscriber(local, cloud)

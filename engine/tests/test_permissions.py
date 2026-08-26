@@ -63,7 +63,7 @@ def test_every_destructive_skill_is_gated():
     """A new skill that shuts down or messages someone must not default to SAFE."""
     must_be_gated = {
         "shutdown_pc", "restart_pc", "sign_out", "empty_recycle_bin",
-        "send_whatsapp", "compose_email", "sleep_pc", "lock_screen",
+        "send_message", "compose_email", "sleep_pc", "lock_screen",
         "close_app", "close_window", "type_text", "toggle_wifi",
         "clear_reminders",
     }

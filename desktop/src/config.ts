@@ -71,28 +71,16 @@ export const requireAuth =
   value("JARVIS_REQUIRE_AUTH", "true").toLowerCase() !== "false" && firebaseConfigured;
 
 /**
- * Two-step verification (TOTP). Needs the Firebase Blaze plan, so it is a
- * switch rather than an assumption — same as the AI Calculator's
- * VITE_ENABLE_2FA.
+ * Two-step verification is always required — it is not a setting.
+ *
+ * It used to be one, because the previous design also had an administrator
+ * approving every new account, and TOTP needs the Firebase **Blaze** plan
+ * (billing account attached; no per-use charge at this volume). With approval
+ * gone, the authenticator is the only thing standing between a leaked password
+ * and someone else's machine, so it stops being optional. `JARVIS_REQUIRE_AUTH`
+ * is the escape hatch, and it is for local development, not for shipping.
  */
-export const twoFactorEnabled = value("JARVIS_ENABLE_2FA").toLowerCase() === "true";
-
-/**
- * Accounts that skip the approval queue. Only meaningful in a build you
- * configured yourself: an admin still has to sign in with that account's
- * password and a verified mailbox, so listing the address grants nothing on
- * its own. Deliberately withheld from packaged builds (see make-app-env.mjs).
- */
-export const adminEmails = new Set(
-  value("JARVIS_ADMIN_EMAILS")
-    .split(/[,\s]+/)
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean)
-);
-
-export function isAdminEmail(email?: string | null): boolean {
-  return Boolean(email && adminEmails.has(email.toLowerCase()));
-}
+export const twoFactorRequired = requireAuth;
 
 /**
  * How long a signed-in session may survive without reaching Firebase.

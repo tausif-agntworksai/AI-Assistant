@@ -2,9 +2,7 @@
  * Builds the environment file that ships inside the packaged app.
  *
  * A Firebase *web* config is public by design — it identifies the project, it
- * doesn't authorise anything — so those values are copied through. The admin
- * allowlist is not: a copy you hand to someone else should not inherit who
- * your administrators are.
+ * doesn't authorise anything — so those values are copied through.
  *
  * Allowlist rather than denylist on purpose. A secret added to desktop/.env
  * later cannot leak by default; it simply isn't copied.
@@ -17,14 +15,13 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE = path.join(root, ".env");
 const OUT = path.join(root, "build", "app.env");
 
-/** Safe to ship: project identity and two behaviour switches. */
+/** Safe to ship: the public project identity, and whether to enforce the gate. */
 const ALLOWLIST = [
   "JARVIS_FIREBASE_API_KEY",
   "JARVIS_FIREBASE_AUTH_DOMAIN",
   "JARVIS_FIREBASE_PROJECT_ID",
   "JARVIS_FIREBASE_APP_ID",
   "JARVIS_REQUIRE_AUTH",
-  "JARVIS_ENABLE_2FA",
 ];
 
 /** Minimal dotenv reader — enough for the KEY=VALUE files in this repo. */

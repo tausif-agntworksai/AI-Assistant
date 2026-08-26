@@ -20,19 +20,39 @@ faster-whisper>=1.1.0
 
 # --- Text to speech ---
 edge-tts>=7.0.0
-pywin32>=311
 
 # --- Brain ---
 anthropic>=0.60.0
 
-# --- Windows control ---
-comtypes>=1.4.0
-pycaw>=20240210
+# --- OS control, cross-platform ---
 psutil>=6.0
-WMI>=1.5.1
 pyautogui>=0.9.54
 pyperclip>=1.9.0
 mss>=10.0
+
+# --- OS control, Windows only ---
+# These four ship no macOS/Linux wheels at all, so without the markers
+# `pip install -r requirements.txt` fails outright off Windows rather than
+# installing the 30-odd skills that are already portable. Every import of them
+# in the engine is lazy and wrapped, so their absence degrades individual
+# skills instead of breaking startup.
+pywin32>=311; sys_platform == "win32"
+comtypes>=1.4.0; sys_platform == "win32"
+pycaw>=20240210; sys_platform == "win32"
+WMI>=1.5.1; sys_platform == "win32"
+
+# --- OS control, macOS only ---
+# pyautogui needs this for keyboard and mouse synthesis on macOS; it is a
+# no-op requirement elsewhere.
+pyobjc-core>=10.0; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
+
+# --- Camera ---
+# Headless rather than the full build: the engine only ever grabs a frame and
+# writes a JPEG, so the Qt GUI stack in `opencv-python` would be ~30 MB of
+# installer for nothing. The wheel is abi3, so it works on 3.14.
+# Imported lazily inside `take_photo`, so its absence costs that one skill.
+opencv-python-headless>=4.10
 
 # --- Bilingual matching ---
 rapidfuzz>=3.10

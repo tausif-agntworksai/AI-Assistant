@@ -35,7 +35,9 @@ import {
   osAccess,
   type Grants,
 } from "./consent";
-import { firebaseConfigured, requireAuth, twoFactorEnabled } from "./config";
+import { keyStore } from "./llmKeys";
+import { log, logPath } from "./log";
+import { firebaseConfigured, requireAuth, twoFactorRequired } from "./config";
 
 const HOTKEY = "Control+Alt+J";
 const WIDTH = 400;
@@ -51,10 +53,18 @@ let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let quitting = false;
 let engineReady = false;
+/** True once a screen has painted at least once. See render-process-gone. */
+let painted = false;
 
 // A single instance owns the microphone and the port; a second would fight it
 // for both and fail in confusing ways.
-if (!app.requestSingleInstanceLock()) {
+//
+// `app.quit()` is a request, not a return: without this flag the rest of
+// startup still ran, built a window, and began loading a page that was then
+// torn down underneath it — surfacing as a bare `ERR_FAILED` with no
+// indication that a second instance was the reason.
+const isPrimaryInstance = app.requestSingleInstanceLock();
+if (!isPrimaryInstance) {
   app.quit();
 } else {
   app.on("second-instance", () => showWindow());
@@ -103,7 +113,7 @@ function showScreen(target: Screen, force = false): Promise<void> {
     win.setMinimumSize(gate ? 380 : 340, gate ? 520 : 420);
     win.setSize(gate ? GATE_WIDTH : WIDTH, gate ? GATE_HEIGHT : HEIGHT);
     try {
-      await win.loadFile(path.join(app.getAppPath(), "renderer", page));
+      await win.loadFile(path.join(app.getAppPath(), "renderer-dist", page));
     } catch (err) {
       // A load superseded by a newer one is the queue working, not a failure.
       if (!String(err).includes("ERR_ABORTED")) throw err;
@@ -171,10 +181,37 @@ function createWindow(): BrowserWindow {
   // silence. Errors from a page land in the same place as everything else.
   window.webContents.on("console-message", (event) => {
     if (event.level !== "error" && event.level !== "warning") return;
-    console.error(
-      `[renderer:${event.level}] ${event.message} ` +
-        `(${event.sourceId}:${event.lineNumber})`
+    log(
+      event.level === "error" ? "error" : "warn",
+      `[renderer] ${event.message} (${event.sourceId}:${event.lineNumber})`
     );
+  });
+
+  // A page that fails to load at all never gets as far as a console message.
+  window.webContents.on("did-fail-load", (_event, code, description, url) => {
+    if (code === -3) return; // ERR_ABORTED: a navigation we superseded ourselves
+    log("error", `[renderer] failed to load ${url}: ${description} (${code})`);
+  });
+
+  // Positive confirmation that a screen actually painted. Worth logging even
+  // when nothing is wrong: in a packaged build this line is the only evidence
+  // that the renderer is alive, and its absence is what a white screen looks
+  // like from the outside.
+  window.webContents.on("did-finish-load", () => {
+    painted = true;
+    log("info", `[renderer] ${currentScreen ?? "page"} painted`);
+  });
+
+  window.webContents.on("render-process-gone", (_event, details) => {
+    // Shutting the app down kills the renderer, and Chromium reports that as a
+    // crash — so this fired on every clean quit and cried wolf. What actually
+    // matters is a renderer that dies *before* painting anything, because that
+    // is a white screen with no other symptom.
+    if (quitting || painted) {
+      log("info", `[renderer] process ended during shutdown (${details.reason})`);
+      return;
+    }
+    log("error", `[renderer] died before painting: ${details.reason}`);
   });
 
   // Closing hides to the tray; the assistant is meant to keep listening.
@@ -283,6 +320,7 @@ function buildTrayMenu(): void {
       },
       { type: "separator" },
       { label: "Open engine log", click: () => shell.openPath(engine.logPath) },
+      { label: "Open app log", click: () => shell.openPath(logPath()) },
       { label: "Open data folder", click: () => shell.openPath(app.getPath("logs")) },
       { type: "separator" },
       {
@@ -339,9 +377,21 @@ async function syncEngineState(): Promise<void> {
     }
     const status = sessionManager.status();
     const allowed = !requireAuth || status.state === "ready";
+
     if (allowed) {
+      // Keys are stored per account, so they are loaded here rather than at
+      // startup: we don't know whose they are until someone has signed in.
+      keyStore.load(status.uid);
+      const llm = keyStore.llmChoice();
+      const speech = keyStore.speechChoice();
+      await engine.pushLlm(llm.provider, llm.model, llm.apiKey);
+      await engine.pushSpeech(speech.provider, speech.apiKey);
       await engine.unlock(status.email, status.uid, sessionManager.unlockTtlSec || 3600);
     } else {
+      // Signing out takes the key back out of the engine's memory, not just
+      // the microphone away from it.
+      await engine.pushLlm("anthropic", "", "");
+      await engine.pushSpeech("", "");
       await engine.lock();
     }
   } catch (err) {
@@ -425,6 +475,7 @@ async function qrCode(text: string): Promise<string | null> {
 /* ── lifecycle ──────────────────────────────────────────────────────────── */
 
 app.whenReady().then(async () => {
+  if (!isPrimaryInstance) return; // another copy already owns the microphone
   lockDownPermissions();
   consentStore.load();
 
@@ -445,6 +496,10 @@ app.whenReady().then(async () => {
     logPath: engine.logPath,
   }));
   ipcMain.handle("engine:listen", () => triggerListen());
+  // Minimise and hide are genuinely different for an assistant: minimising
+  // parks it in the taskbar, hiding tucks it into the tray. Both keep it
+  // listening; only "turn off" stops that.
+  ipcMain.handle("window:minimize", () => win?.minimize());
   ipcMain.handle("window:hide", () => win?.hide());
   // The HUD's own "turn off" button. `quitting` is what tells the close
   // handler to stop hiding to the tray and actually let the app go.
@@ -462,7 +517,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("auth:config", () => ({
     configured: firebaseConfigured,
     required: requireAuth,
-    twoFactor: twoFactorEnabled,
+    twoFactor: twoFactorRequired,
   }));
   ipcMain.handle("auth:status", () => sessionManager.status());
   ipcMain.handle("auth:signIn", async (_e, email: string, password: string) => {
@@ -536,6 +591,68 @@ app.whenReady().then(async () => {
     osAccess(kind)
   );
 
+  // ── the AI model and the speech recogniser ────────────────────────────
+  //
+  // Note what does *not* cross this boundary: the key itself. The renderer can
+  // set one and can ask whether one exists, but there is no handler that
+  // returns it.
+  ipcMain.handle("ai:info", async () => {
+    const info = engineReady
+      ? await engine.llmInfo<Record<string, unknown>>().catch(() => ({}))
+      : {};
+    return { ...info, stored: keyStore.summary() };
+  });
+
+  ipcMain.handle(
+    "ai:setLlm",
+    async (_e, provider: string, model: string, apiKey?: string) => {
+      const choice = keyStore.setLlm(provider, model, apiKey);
+      if (engineReady) {
+        await engine.pushLlm(choice.provider, choice.model, choice.apiKey);
+      }
+      return keyStore.summary();
+    }
+  );
+
+  ipcMain.handle("ai:setSpeech", async (_e, provider: string, apiKey?: string) => {
+    const choice = keyStore.setSpeech(provider, apiKey);
+    if (engineReady) await engine.pushSpeech(choice.provider, choice.apiKey);
+    return keyStore.summary();
+  });
+
+  ipcMain.handle(
+    "ai:validate",
+    async (_e, provider: string, apiKey: string, model?: string) => {
+      try {
+        const resolved = await engine.validateKey(provider, apiKey, model ?? "");
+        return { ok: true, model: resolved };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    }
+  );
+
+  ipcMain.handle("ai:models", async (_e, provider: string, apiKey?: string) => {
+    // An empty key means "use the one already stored", so the model list can be
+    // refreshed without the renderer ever holding the secret.
+    const key = apiKey || keyStore.llmChoice().apiKey;
+    if (!key) return { models: [] };
+    try {
+      return { models: await engine.listModels(provider, key) };
+    } catch (err) {
+      return { models: [], error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("ai:forget", async () => {
+    keyStore.forget();
+    if (engineReady) {
+      await engine.pushLlm("anthropic", "", "");
+      await engine.pushSpeech("", "");
+    }
+    return keyStore.summary();
+  });
+
   sessionManager.on("change", (status: AuthStatus) => {
     send("auth:status", status);
     buildTrayMenu();
@@ -546,7 +663,11 @@ app.whenReady().then(async () => {
   // The first screen is decided before anything is shown, so nobody ever sees
   // the HUD flash past on the way to a sign-in prompt.
   await sessionManager.restore();
-  await showScreen(requiredScreen(), true);
+  // Not forced: restoring emits a change, whose handler has usually already
+  // started loading this very screen. Forcing here loaded the same page twice
+  // on every launch. Awaiting it still guarantees a screen is settled before
+  // the engine boots.
+  await showScreen(requiredScreen());
   buildTrayMenu();
 
   // Ask Windows about the microphone once, up front: if privacy settings block

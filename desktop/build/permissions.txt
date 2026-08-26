@@ -72,9 +72,13 @@ SIGNING IN
 ----------
 
 If this build is configured with a Firebase project, Jarvis will not open the
-microphone at all until you sign in with a verified email address that an
-administrator has approved. The account is stored encrypted with your Windows
-account's own key, and can be signed out from the tray icon at any time.
+microphone at all until you have signed in. Creating an account takes an email
+address, a password, a verification link, and an authenticator app (Google
+Authenticator, Authy, 1Password or similar) — nobody has to approve you.
+
+Your account is stored encrypted with your own Windows account's key, and you
+can sign out from the tray icon at any time. Signing out closes the
+microphone.
 
 
 UNINSTALLING

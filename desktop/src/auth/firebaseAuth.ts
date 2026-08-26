@@ -47,14 +47,17 @@ export type SignInResult =
   | { status: "signed-in"; tokens: Tokens }
   | { status: "mfa-required"; challenge: MfaChallenge };
 
-/** The claims this app reads out of an ID token. */
+/**
+ * The claims this app reads out of an ID token.
+ *
+ * Deliberately three fields. There is no `approved` or `admin` here any more:
+ * accounts are self-serve, so nothing about authorisation travels in the token
+ * and there is no custom claim for anyone to read, forge, or wait for.
+ */
 export interface TokenClaims {
   uid: string;
   email: string;
   emailVerified: boolean;
-  /** Set by an admin through the AI Calculator's dashboard, on this project. */
-  approved: boolean;
-  admin: boolean;
   expiresAt: number;
 }
 
@@ -139,6 +142,22 @@ export function friendlyMessage(rawCode: string): string {
       return "Your session expired. Please sign in again.";
     case "SECOND_FACTOR_EXISTS":
       return "Two-step verification is already set up on this account.";
+    case "UNVERIFIED_EMAIL":
+      return "Verify your email address before setting up two-step verification.";
+    case "MISSING_ID_TOKEN":
+    case "CREDENTIAL_TOO_OLD_LOGIN_AGAIN":
+      return "For your security, sign in again before changing two-step verification.";
+    // The one misconfiguration a user will actually hit. TOTP needs Firebase
+    // Authentication with Identity Platform, which needs the Blaze plan — and
+    // since the authenticator is now mandatory, a project without it leaves
+    // everyone stuck at the enrolment screen. Say what to do about it.
+    case "TOTP_MFA_NOT_ENABLED":
+    case "MFA_NOT_ENABLED":
+      return (
+        "This Firebase project doesn’t have authenticator (TOTP) sign-in " +
+        "switched on. It needs the Blaze plan and Identity Platform enabled — " +
+        "see FIREBASE_SETUP.md."
+      );
     case "OPERATION_NOT_ALLOWED":
       return "Email sign-in isn’t enabled on this Firebase project.";
     default:
@@ -179,8 +198,6 @@ export function readClaims(idToken: string): TokenClaims | null {
       uid: String(claims.user_id ?? claims.sub ?? ""),
       email: String(claims.email ?? ""),
       emailVerified: claims.email_verified === true,
-      approved: claims.approved === true,
-      admin: claims.admin === true,
       expiresAt: Number(claims.exp ?? 0) * 1000,
     };
   } catch {

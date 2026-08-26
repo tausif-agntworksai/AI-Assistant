@@ -19,6 +19,7 @@ import typing
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, get_args, get_origin
 
+from .. import net
 from ..permissions import (
     Capability,
     PermissionDenied,
@@ -101,6 +102,15 @@ class SkillSpec:
     confirm_en: str = ""
     confirm_hi: str = ""
     hidden: bool = False  # kept out of Claude's tool list
+    #: True when this skill cannot do anything useful without a connection.
+    #: Checked before the skill runs, so losing the internet produces "weather
+    #: needs the internet" instead of the generic "that didn't work" — which is
+    #: indistinguishable from a bug and invites the user to try again.
+    needs_network: bool = False
+    #: Short name for the feature, used in that message. Falls back to the
+    #: skill's own name, which reads badly ("get_weather needs the internet").
+    network_label: str = ""
+    network_label_hi: str = ""
 
     def __post_init__(self) -> None:
         self.signature = inspect.signature(self.func)
@@ -113,6 +123,10 @@ class SkillSpec:
             for name, p in self.signature.parameters.items()
         )
         self.capability = capability_for(self.name, self.category)
+
+    def offline_prompts(self) -> tuple[str, str]:
+        label = self.network_label or self.description
+        return net.offline_message(label, self.network_label_hi or label)
 
     def confirm_prompts(self, args: dict[str, Any]) -> tuple[str, str]:
         """Build the confirmation question, interpolating the arguments."""
@@ -247,6 +261,12 @@ class SkillRegistry:
         if not gate.check_consent(spec.capability):
             return self._refuse_capability(spec, args, ctx)
 
+        # Before the confirmation prompt, for the same reason consent is: there
+        # is no point asking "shall I look up the weather?" when the answer
+        # cannot be reached either way.
+        if spec.needs_network and not ctx.dry_run and not net.is_online():
+            return self._refuse_offline(spec, args, ctx)
+
         if ctx.dry_run:
             detail = f"{spec.name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
             log.info("DRY RUN: %s [risk=%s]", detail, spec.risk.value)
@@ -313,6 +333,23 @@ class SkillRegistry:
         )
 
     @staticmethod
+    def _refuse_offline(
+        spec: SkillSpec, args: dict[str, Any], ctx: SkillContext
+    ) -> SkillResult:
+        """Say the feature needs a connection, and that the rest still works.
+
+        Recorded in the audit log as a refusal rather than a failure, because it
+        is one: nothing was attempted. A run of these in the log is a connection
+        problem, which is worth being able to see at a glance.
+        """
+        log.info("Blocked %s — no connectivity", spec.name)
+        audit(spec.name, risk=spec.risk.value, args=args, allowed=False, ok=False,
+              detail="offline: feature needs the internet",
+              source=ctx.source, transcript=ctx.transcript, account=ctx.account)
+        message_en, message_hi = spec.offline_prompts()
+        return fail(message_en, message_hi, detail="offline")
+
+    @staticmethod
     def _coerce_args(spec: SkillSpec, args: dict[str, Any]) -> dict[str, Any]:
         """Coerce values to their annotated types.
 
@@ -351,6 +388,9 @@ def skill(
     confirm_en: str = "",
     confirm_hi: str = "",
     hidden: bool = False,
+    needs_network: bool = False,
+    network_label: str = "",
+    network_label_hi: str = "",
 ) -> Callable[[Callable[..., SkillResult]], Callable[..., SkillResult]]:
     """Register a function as a skill. See the module docstring."""
 
@@ -367,6 +407,9 @@ def skill(
                 confirm_en=confirm_en,
                 confirm_hi=confirm_hi,
                 hidden=hidden,
+                needs_network=needs_network,
+                network_label=network_label,
+                network_label_hi=network_label_hi,
             )
         )
         return func

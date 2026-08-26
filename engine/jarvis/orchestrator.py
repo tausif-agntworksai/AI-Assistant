@@ -24,7 +24,6 @@ Two things here exist specifically so nobody has to repeat themselves:
 from __future__ import annotations
 
 import logging
-import random
 import threading
 import time
 from dataclasses import dataclass
@@ -32,9 +31,10 @@ from typing import Any
 
 import numpy as np
 
-from . import winutil
+from . import net, winutil
 from .announce import set_handler as set_announce_handler
 from .audio.capture import AudioCapture, FrameAccumulator, RingBuffer, rms_level
+from .audio.earcon import Acknowledger
 from .audio.enhance import is_too_quiet
 from .audio.player import AudioPlayer
 from .audio.vad import SegmentResult, SpeechSegmenter, create_vad
@@ -71,6 +71,11 @@ class Turn:
     reply: str = ""
     understood: bool = False
     skill: str = ""
+    #: How this turn was resolved: "rule" or "example" (offline, free and
+    #: instant), "llm" (a model was asked), or "local" (the engine's own
+    #: canned words, like asking you to repeat). Surfaced in the HUD so the
+    #: split between local and paid work is visible rather than a claim.
+    via: str = ""
 
 
 class Orchestrator:
@@ -83,6 +88,9 @@ class Orchestrator:
         self.wake = None
         self.vad = None
         self.segmenter: SpeechSegmenter | None = None
+        self.acknowledger = Acknowledger(
+            self.player, settings.wake_word.acknowledge
+        )
 
         self._thread: threading.Thread | None = None
         self._running = threading.Event()
@@ -93,8 +101,6 @@ class Orchestrator:
         self._awaiting_confirmation = False
         self._want_audio = False
         self._followup_until = 0.0
-        #: Last acknowledgement spoken per language, so the next one differs.
-        self._last_ack: dict[str, str] = {}
         self._misses = 0
         self._recent_peak = 0.0
         self._quiet_warned = False
@@ -114,6 +120,9 @@ class Orchestrator:
         restore_timers()
 
         self.speaker = create_speaker(self.cfg.tts, player=self.player)
+        # Renders in the background: the chime covers every wake word until
+        # the spoken cues are ready, so nothing waits on this.
+        self.acknowledger.prepare()
         set_announce_handler(self._on_announcement)
         gate.set_confirmer(self._confirm_by_voice if with_audio else self._confirm_headless)
 
@@ -178,33 +187,6 @@ class Orchestrator:
             self.transcriber.warmup()
         except Exception as exc:  # noqa: BLE001
             log.warning("Speech model warmup failed: %s", exc)
-        self._warm_acknowledgement()
-
-    def _warm_acknowledgement(self) -> None:
-        """Synthesize the wake-word replies now, while nobody is waiting.
-
-        The acknowledgement plays *before* the microphone opens, so paying for
-        a cold network round-trip on the first "hey jarvis" would mean a
-        multi-second wait at exactly the wrong moment. Doing it at startup
-        means the first one is served from cache like every one after it.
-        """
-        if self.cfg.wake_word.acknowledge != "voice" or self.speaker is None:
-            return
-        synthesize = getattr(self.speaker, "synthesize", None)
-        if not callable(synthesize):
-            return
-        # Every phrase, not just one: which gets picked is random, so any that
-        # isn't cached would be the slow one at the worst moment.
-        warmed = 0
-        for language in ("en", "hi"):
-            for phrase in self.cfg.wake_word.ack_texts(language):
-                try:
-                    synthesize(phrase, language)
-                    warmed += 1
-                except Exception as exc:  # noqa: BLE001 - a cold cache is survivable
-                    log.debug("Could not pre-render %r: %s", phrase, exc)
-        if warmed:
-            log.info("Wake-word replies ready (%d phrases)", warmed)
 
     def stop(self) -> None:
         self._stop_audio()
@@ -334,6 +316,13 @@ class Orchestrator:
                 self._recent_peak = max(self._recent_peak * 0.995, level)
                 bus.publish(Event.LEVEL, level=level)
 
+            # Our own acknowledgement is playing. Drop these frames rather
+            # than transcribe them: the cue is the assistant's voice, not
+            # the user's, and it would otherwise arrive at Whisper glued to
+            # the front of the command as "Yes? chrome kholo".
+            if self.player.is_earcon:
+                continue
+
             # Barge-in: the wake word cuts off a reply that's still playing.
             if self.player.is_playing:
                 if listening:
@@ -374,13 +363,7 @@ class Orchestrator:
                 if self._wake_available:
                     for frame in ww_frames.push(block):
                         if self.wake.triggered(frame):
-                            if self._acknowledge():
-                                # We just spoke. Everything buffered is our own
-                                # voice, and seeding the segmenter with it would
-                                # have the assistant transcribe itself.
-                                self.capture.drain()
-                                preroll.clear()
-                                ww_frames.reset()
+                            self._acknowledge()
                             self._begin_listening(preroll, vad_frames)
                             listening = True
                             break
@@ -426,70 +409,16 @@ class Orchestrator:
         preroll.clear()
         bus.set_state(State.LISTENING, follow_up=follow_up)
 
-    def _acknowledge(self) -> bool:
-        """Answer the wake word, so the user knows they were heard.
+    def _acknowledge(self) -> None:
+        """Tell the user, out loud, that the wake word landed.
 
-        Returns True if it made a sound — the caller then drops the pre-roll,
-        because that buffer now holds our own voice rather than the user's.
-
-        Deliberately synchronous. Speaking on a worker thread would overlap
-        the user's first words with our own, and with no echo cancellation the
-        microphone would transcribe both. A short phrase costs ~400 ms, and
-        after the first one it is served from the TTS cache, so the wait is
-        local and consistent rather than a network round-trip every time.
+        This used to be a log line and nothing else. The orb changed colour,
+        which is no use at all when the window is hidden in the tray — so
+        there was no way to tell whether you had been heard, and the natural
+        response is to say it again.
         """
         bus.publish(Event.LOG, message="wake word detected")
-
-        mode = self.cfg.wake_word.acknowledge
-        if mode == "none" or self.speaker is None:
-            return False
-
-        try:
-            if mode == "chime":
-                return self._play_chime()
-
-            language = self.last_language
-            phrase = self._pick_acknowledgement(language)
-            if not phrase:
-                return False
-            bus.set_state(State.SPEAKING)
-            self.speaker.speak(phrase, language)
-            return True
-        except Exception as exc:  # noqa: BLE001 - never miss a command over a chirp
-            log.debug("Acknowledgement failed: %s", exc)
-            return False
-
-    def _pick_acknowledgement(self, language: str) -> str:
-        """One of the configured replies, never the same one twice running.
-
-        Repeating verbatim is what makes an assistant sound like a recording;
-        an immediate repeat is the only case anyone actually notices, so that
-        is all this guards against.
-        """
-        choices = self.cfg.wake_word.ack_texts(language)
-        if not choices:
-            return ""
-        if len(choices) > 1:
-            previous = self._last_ack.get(language[:2])
-            fresh = [c for c in choices if c != previous]
-            if fresh:
-                choices = fresh
-        phrase = random.choice(choices)
-        self._last_ack[language[:2]] = phrase
-        return phrase
-
-    def _play_chime(self) -> bool:
-        """A 140 ms rising blip. Generated, so there is no asset to ship."""
-        rate = 24000
-        duration = 0.14
-        t = np.linspace(0.0, duration, int(rate * duration), endpoint=False)
-        # Two soft partials sliding upward read as friendly rather than alarm-like.
-        tone = 0.5 * np.sin(2 * np.pi * (620 + 300 * t / duration) * t)
-        tone += 0.2 * np.sin(2 * np.pi * (1240 + 600 * t / duration) * t)
-        # Raised-cosine envelope: an abrupt edge would click.
-        envelope = np.sin(np.pi * np.linspace(0.0, 1.0, t.size)) ** 1.5
-        self.player.play((tone * envelope * 0.28).astype(np.float32), rate)
-        return True
+        self.acknowledger.play(self.last_language)
 
     def _open_followup(self) -> None:
         """Arm the follow-up so the listen loop picks it up on its next block.
@@ -559,7 +488,7 @@ class Orchestrator:
             # Speak on a worker thread so the listen loop keeps consuming audio
             # while the reply plays. Blocking here would park the only thread
             # that can notice the wake word, which is what barge-in needs.
-            self.speak_async(turn.reply, self.last_language)
+            self.speak_async(turn.reply, self.last_language, via=turn.via)
         elif not turn.understood:
             self._not_understood(heard_something=True)
         else:
@@ -630,13 +559,13 @@ class Orchestrator:
             self._misses = 0
             self.speak_async(
                 "मैं ये समझ नहीं पाया।" if hi else "I didn't catch that one.",
-                self.last_language,
+                self.last_language, via="local",
             )
             return
 
         prompt = "फिर से बोलिए?" if hi else "Sorry — say that again?"
         bus.publish(Event.LOG, message="asked for a repeat", misses=self._misses)
-        self.speak_async(prompt, self.last_language)
+        self.speak_async(prompt, self.last_language, via="local")
 
     def handle_text(self, text: str, language: str = "en", source: str = "text",
                     dry_run: bool = False) -> str:
@@ -675,7 +604,7 @@ class Orchestrator:
                 bus.set_state(State.ACTING)
                 result = registry.execute(intent.skill, intent.args, ctx)
                 return Turn(reply=result.text(language), understood=True,
-                            skill=intent.skill)
+                            skill=intent.skill, via=intent.matched_by)
 
             turn = self._ask_brain(text, language, ctx)
 
@@ -685,14 +614,25 @@ class Orchestrator:
         if not turn.understood and not turn.reply and source != "voice":
             turn.reply = ("मैं ये समझ नहीं पाया।" if language.startswith("hi")
                           else "I didn't catch that one.")
+            turn.via = "local"
         return turn
 
     def _ask_brain(self, text: str, language: str, ctx: SkillContext) -> Turn:
         from .nlu.llm import brain
 
         if not brain.available:
-            log.info("No local rule matched and no API key is set: %r", text)
-            return Turn(reply="", understood=False)
+            # The rules didn't recognise it and there is no model to ask. Say so
+            # once and point at the fix, rather than going quiet and leaving the
+            # user to conclude the assistant is broken — this is the normal
+            # state of a fresh install, not a fault.
+            log.info("No local rule matched and no model key is set: %r", text)
+            bus.publish(Event.NEEDS_KEY, reason="no-api-key", transcript=text[:200])
+            return Turn(
+                reply=("इसके लिए मुझे एक AI key चाहिए। Settings खोल दी है।"
+                       if language.startswith("hi")
+                       else "I need an AI key for that one — I've opened settings."),
+                understood=True, via="local",
+            )
 
         if not consent.allows(Capability.NETWORK):
             log.info("Brain skipped — internet permission not granted")
@@ -703,10 +643,32 @@ class Orchestrator:
                 understood=True,
             )
 
+        # Checked here rather than left to the provider's own timeout. Offline,
+        # the request would hang for however long the HTTP client waits and then
+        # surface as a connection error, so the user gets a long silence
+        # followed by something that sounds like a bug. This is immediate, and
+        # it says which half of the assistant still works.
+        if not net.is_online():
+            log.info("Brain skipped — no connectivity")
+            return Turn(
+                reply=("इसके लिए इंटरनेट चाहिए और अभी connection नहीं है। "
+                       "कंप्यूटर के काम — apps, volume, brightness, timer — "
+                       "सब चल रहे हैं।"
+                       if language.startswith("hi")
+                       else "That one needs the internet, and there's no "
+                            "connection right now. Everything on your computer "
+                            "still works — apps, volume, brightness, timers."),
+                understood=True, via="local",
+            )
+
         bus.set_state(State.THINKING)
         result = brain.interpret(text, language, self._live_context())
 
         if result.error:
+            if result.error_kind == "network":
+                # Better evidence about the connection than any probe, and it
+                # arrived for free. The next skill that cares re-checks.
+                net.note_failure()
             bus.publish(Event.ERROR, message=result.error)
             return Turn(
                 reply=("अभी दिमाग़ काम नहीं कर रहा।" if language.startswith("hi")
@@ -730,7 +692,8 @@ class Orchestrator:
 
         understood = bool(result.actions or result.speech.strip())
         return Turn(reply=" ".join(replies), understood=understood,
-                    skill=result.actions[0].skill if result.actions else "")
+                    skill=result.actions[0].skill if result.actions else "",
+                    via="llm")
 
     def _resolve_language(self, transcript=None, detected: str = "", text: str = "") -> str:
         """Which language to reply in.
@@ -774,23 +737,24 @@ class Orchestrator:
 
     # -- speaking -----------------------------------------------------------
 
-    def speak(self, text: str, language: str = "en") -> bool:
+    def speak(self, text: str, language: str = "en", via: str = "") -> bool:
         """Speak and block until done. Used where ordering matters."""
         if not text.strip() or self.speaker is None:
             return True
         if not consent.allows(Capability.SPEAKER):
-            bus.publish(Event.REPLY, text=text, language=language, spoken=False)
+            bus.publish(Event.REPLY, text=text, language=language,
+                        spoken=False, via=via)
             return True
         with self._speak_lock:
             bus.set_state(State.SPEAKING)
-            bus.publish(Event.REPLY, text=text, language=language)
+            bus.publish(Event.REPLY, text=text, language=language, via=via)
             ok = self.speaker.speak(text, language)
             if self.capture:
                 # Drop whatever the microphone picked up of our own voice.
                 self.capture.drain()
             return ok
 
-    def speak_async(self, text: str, language: str = "en") -> None:
+    def speak_async(self, text: str, language: str = "en", via: str = "") -> None:
         """Speak without blocking the caller, returning to IDLE when finished."""
         if not text.strip() or self.speaker is None:
             bus.set_state(State.IDLE)
@@ -799,7 +763,7 @@ class Orchestrator:
 
         def run() -> None:
             try:
-                self.speak(text, language)
+                self.speak(text, language, via=via)
             finally:
                 # Barge-in already moved us to LISTENING; don't stomp on it.
                 if bus.state is State.SPEAKING:

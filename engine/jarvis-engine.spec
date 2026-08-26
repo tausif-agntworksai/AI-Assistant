@@ -39,8 +39,42 @@ hiddenimports += [
     for name in (
         "apps", "web", "system", "windows_mgr", "media", "volume",
         "display", "device", "files", "productivity", "messaging", "knowledge",
+        "social",
     )
 ]
+# The model providers are built inside `_build_registry()` rather than imported
+# at module scope, so static analysis misses them too. Without these the frozen
+# build starts fine and then fails on the first question with
+# "No module named jarvis.llm.anthropic_provider".
+hiddenimports += [
+    f"jarvis.llm.{name}"
+    for name in ("base", "anthropic_provider", "gemini_provider", "openai_compatible")
+]
+
+# Speech backends, same reason: chosen at runtime from config or a pushed key.
+hiddenimports += [
+    "jarvis.stt.local_whisper", "jarvis.stt.cloud", "jarvis.stt.tiered",
+    "jarvis.stt.selection", "jarvis.tts.edge", "jarvis.tts.sapi",
+]
+
+# Diagnostics, imported inside their own command handlers so that starting the
+# assistant does not pay for them. PyInstaller only follows imports it can see,
+# so a lazily-imported diagnostic goes missing from the frozen build — and it
+# goes missing exactly when someone is already trying to work out why the
+# microphone is not behaving.
+hiddenimports += ["jarvis.audio.wake_tune"]
+
+# OpenCV is imported inside `take_photo` so that a machine without it loses one
+# skill rather than failing to start. PyInstaller cannot see that import, and
+# `cv2` needs its binaries collected rather than just its module named.
+try:
+    _cv2_datas, _cv2_binaries, _cv2_hidden = collect_all("cv2")
+    datas += _cv2_datas
+    binaries += _cv2_binaries
+    hiddenimports += _cv2_hidden
+except Exception:  # noqa: BLE001 - not installed; take_photo says so at runtime
+    pass
+
 hiddenimports += [
     "win32com.client", "pythoncom", "pywintypes", "win32gui", "win32process",
     "win32api", "win32con", "wmi", "uvicorn.logging", "uvicorn.loops.auto",

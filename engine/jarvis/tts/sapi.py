@@ -1,9 +1,13 @@
-"""Offline TTS via the Windows Speech API.
+"""Offline TTS via the Windows Speech API. Windows only.
 
 Fallback for when Edge TTS can't reach the network. Note the real limitation on
 this machine: only en-US voices (David, Zira) are installed, so Hindi text is
 pronounced with an English phoneme set and sounds wrong. Installing the Windows
 Hindi language pack adds `Microsoft Hemant` and fixes it offline.
+
+Constructing this on a machine without SAPI raises, which is what lets
+`create_speaker` fall through to the next backend — see the comment in
+`__init__`.
 """
 
 from __future__ import annotations
@@ -26,6 +30,19 @@ class SapiSpeaker(Speaker):
     available = True
 
     def __init__(self, rate: int = 1) -> None:
+        # Fail construction if SAPI isn't reachable, rather than at the first
+        # utterance. Nothing in this class used to import anything until
+        # `_ensure_voice`, so `available = True` was a claim about every
+        # platform — and off Windows `create_speaker` would hand back a speaker
+        # that accepted every reply and played none of them. Silence reads as a
+        # crash; NullSpeaker's honest text-only mode does not.
+        #
+        # A bare import is deliberate: `_ensure_voice` calls `CoInitialize`,
+        # which binds a COM apartment to the calling thread, and speaking
+        # happens on a worker thread rather than this one.
+        import pythoncom  # noqa: F401
+        import win32com.client  # noqa: F401
+
         self.rate = rate
         self._voice = None
         self._lock = threading.Lock()

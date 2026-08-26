@@ -1,0 +1,85 @@
+.orb {
+  position: relative;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  background: radial-gradient(circle at 34% 28%,
+    color-mix(in srgb, var(--accent) 22%, var(--panel-2)), var(--panel) 72%);
+  border: 1px solid var(--line);
+  transition: border-color var(--slow) var(--ease), box-shadow var(--slow) var(--ease);
+}
+.orb.clickable { cursor: pointer; -webkit-app-region: no-drag; }
+.orb.clickable:focus-visible { box-shadow: var(--ring); }
+
+.orb-core {
+  width: 34%; height: 34%;
+  border-radius: 50%;
+  background: var(--faint);
+  transition: background var(--slow) var(--ease), transform var(--fast) var(--ease);
+}
+
+/* The live ring. Scaled by --level, so it follows your voice. */
+.orb-ring {
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  transform: scale(calc(1 + var(--level, 0) * .3));
+  transition: transform .08s linear, border-color var(--slow) var(--ease);
+}
+
+.orb[data-orb-state="idle"] .orb-core { background: var(--faint); }
+
+.orb[data-orb-state="listening"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 26px -6px var(--accent);
+}
+.orb[data-orb-state="listening"] .orb-core { background: var(--accent); }
+.orb[data-orb-state="listening"] .orb-ring {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* A follow-up window is the microphone open without a wake word. Worth looking
+   different from ordinary listening, because it is a different situation. */
+.orb.followup .orb-ring {
+  border-style: dashed;
+  animation: orb-breathe 1.8s var(--ease) infinite;
+}
+
+.orb[data-orb-state="thinking"] .orb-core {
+  background: var(--warn);
+  animation: orb-pulse .9s var(--ease) infinite;
+}
+.orb[data-orb-state="acting"] .orb-core { background: var(--warn); }
+
+.orb[data-orb-state="speaking"] {
+  border-color: var(--ok);
+  box-shadow: 0 0 26px -8px var(--ok);
+}
+.orb[data-orb-state="speaking"] .orb-core {
+  background: var(--ok);
+  animation: orb-pulse .7s var(--ease) infinite;
+}
+
+.orb[data-orb-state="confirming"] {
+  border-color: var(--warn);
+  box-shadow: 0 0 26px -6px var(--warn);
+}
+.orb[data-orb-state="confirming"] .orb-core {
+  background: var(--warn);
+  animation: orb-blink .8s steps(2, end) infinite;
+}
+
+.orb[data-orb-state="error"] .orb-core { background: var(--danger); }
+.orb[data-orb-state="starting"] .orb-core {
+  background: var(--warn);
+  animation: orb-blink 1.1s steps(2, end) infinite;
+}
+
+@keyframes orb-pulse { 50% { transform: scale(1.26); } }
+@keyframes orb-blink { 50% { opacity: .25; } }
+@keyframes orb-breathe {
+  0%, 100% { opacity: .45; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.12); }
+}

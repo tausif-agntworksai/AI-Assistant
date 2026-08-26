@@ -61,6 +61,13 @@ def build_parser() -> argparse.ArgumentParser:
                       help="transcribe an audio file and print the result")
     diag.add_argument("--test-mic", metavar="SECONDS", nargs="?", const="5", type=str,
                       help="record from the microphone and transcribe it")
+    diag.add_argument("--tune-wake-word", metavar="TIMES", nargs="?", const="5",
+                      type=str,
+                      help="measure the wake word on your voice and recommend a "
+                           "threshold (say it TIMES times, default 5)")
+    diag.add_argument("--apply", action="store_true",
+                      help="with --tune-wake-word, write the recommendation to "
+                           "config.yaml instead of only printing it")
 
     return p
 
@@ -193,6 +200,112 @@ def cmd_test_mic(seconds: float) -> int:
     return 0
 
 
+def cmd_tune_wake_word(times: int, apply: bool) -> int:
+    """Measure the wake word against this microphone and this voice.
+
+    Reported rather than silently applied unless asked: the threshold is a
+    trade-off between repeating yourself and being woken by the television, and
+    which side of it you want is not something a measurement can decide.
+    """
+    from .audio.capture import AudioCapture
+    from .audio.wake_tune import explain, measure
+    from .audio.wakeword import OpenWakeWord
+    from .config import settings
+
+    try:
+        detector = OpenWakeWord(
+            settings.wake_word.model, threshold=settings.wake_word.threshold,
+            cooldown_sec=0.0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Wake word unavailable: {type(exc).__name__}: {exc}")
+        return 1
+
+    capture = AudioCapture(device=settings.audio.input_device)
+    print(f"\nSay \"hey jarvis\" {times} times, with a breath between each.")
+    print("Say it the way you normally would — as two connected words, not")
+    print("\"hey ... jarvis\". The model scores a pause between them far lower,")
+    print("which is why saying it more slowly after being missed makes it worse.\n")
+
+    last = [-1]
+
+    def progress(stage: str, elapsed: float, score: float, counted: int) -> None:
+        if stage == "quiet":
+            print(f"\n  listening to the room... {elapsed:4.1f}s", end="", flush=True)
+            return
+        if counted != last[0]:
+            last[0] = counted
+            print(f"\n  heard {counted} of {times}...            ", end="", flush=True)
+
+    try:
+        capture.start()
+        result = measure(detector, capture, say_times=times, on_progress=progress)
+    except Exception as exc:  # noqa: BLE001
+        print(f"\nCould not open the microphone: {type(exc).__name__}: {exc}")
+        return 1
+    finally:
+        capture.stop()
+
+    print("\n" + " " * 46)
+    print("=" * 66)
+    for line in explain(result, settings.wake_word.threshold):
+        print(line)
+    print("=" * 66)
+
+    recommended = result.recommended
+    if recommended is None:
+        return 1
+    if not apply:
+        print(f"\n  To use it:  set wake_word.threshold to {recommended:.2f} in "
+              "config.yaml,")
+        print("              or re-run this with --apply\n")
+        return 0
+
+    if _write_threshold(recommended):
+        print(f"\n  wake_word.threshold set to {recommended:.2f}. "
+              "Restart for it to take effect.\n")
+        return 0
+    return 1
+
+
+def _write_threshold(value: float) -> bool:
+    """Update `wake_word.threshold` in config.yaml, creating it if need be.
+
+    Edited as text rather than dumped from the parsed tree, because a round trip
+    through the YAML loader would throw away every comment in the file — and the
+    comments are most of what makes that file usable.
+    """
+    import re
+
+    from . import paths
+
+    path = paths.CONFIG_FILE
+    try:
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                "# Written by --tune-wake-word.\n"
+                "wake_word:\n"
+                f"  threshold: {value:.2f}\n",
+                encoding="utf-8",
+            )
+            print(f"  wrote {path}")
+            return True
+
+        text = path.read_text(encoding="utf-8")
+        pattern = re.compile(r"^(\s*threshold\s*:\s*)([0-9.]+)", re.MULTILINE)
+        if "wake_word:" in text and pattern.search(text):
+            text = pattern.sub(lambda m: f"{m.group(1)}{value:.2f}", text, count=1)
+        else:
+            text = text.rstrip("\n") + f"\n\nwake_word:\nthreshold: {value:.2f}\n"
+        path.write_text(text, encoding="utf-8")
+        print(f"  updated {path}")
+        return True
+    except OSError as exc:
+        print(f"  could not write {path}: {exc}")
+        return False
+
+
 def cmd_doctor() -> int:
     """Report readiness of every subsystem. Never raises."""
     from .config import settings
@@ -205,7 +318,8 @@ def cmd_doctor() -> int:
 
     print(f"\nJARVIS {__version__} — environment check\n" + "=" * 72)
 
-    print(f"\nPython {sys.version.split()[0]} ({sys.executable})")
+    print(f"\nPlatform {sys.platform}")
+    print(f"Python {sys.version.split()[0]} ({sys.executable})")
     if sys.version_info < (3, 11):
         line(fail, "python version", "3.11+ required")
         problems += 1
@@ -218,8 +332,12 @@ def cmd_doctor() -> int:
     line(ok if paths.ENV_FILE.exists() else warn, ".env",
          "found" if paths.ENV_FILE.exists() else "copy .env.example to .env")
 
+    # Required everywhere, then the ones that only exist on this platform.
+    # Reporting `win32api` as missing-and-fatal on a Mac would make --doctor
+    # impossible to pass there — and `scripts/build-engine` gates the whole
+    # build on its exit code, so that would have blocked every macOS build.
     print("\nDependencies")
-    for module, purpose in [
+    required = [
         ("sounddevice", "microphone capture"),
         ("numpy", "audio buffers"),
         ("onnxruntime", "wake word + VAD inference"),
@@ -231,10 +349,18 @@ def cmd_doctor() -> int:
         ("indic_transliteration", "Devanagari handling"),
         ("anthropic", "LLM brain"),
         ("psutil", "device status"),
-        ("win32api", "Windows control (pywin32)"),
-        ("comtypes", "audio session control"),
         ("fastapi", "HUD API"),
-    ]:
+    ]
+    if sys.platform == "win32":
+        required += [
+            ("win32api", "Windows control (pywin32)"),
+            ("comtypes", "audio session control"),
+            ("pycaw", "volume control"),
+        ]
+    elif sys.platform == "darwin":
+        required += [("Quartz", "macOS window control (pyobjc)")]
+
+    for module, purpose in required:
         try:
             __import__(module)
             line(ok, module, purpose)
@@ -323,12 +449,31 @@ def cmd_doctor() -> int:
         line(fail, "permissions", str(exc))
         problems += 1
 
-    print("\nSecrets")
-    line(ok if settings.brain.api_key else warn, "ANTHROPIC_API_KEY",
-         f"set (model {settings.brain.model})" if settings.brain.api_key
-         else "missing - rules still work, no conversation/Q&A")
-    line(ok if settings.stt.cloud_api_key else warn, "CLOUD_STT_API_KEY",
-         "set" if settings.stt.cloud_api_key else "not set - local speech only")
+    print("\nLanguage model")
+    try:
+        from . import llm
+
+        snapshot = llm.selection.snapshot()
+        source = "from .env" if snapshot["from_environment"] else "set in the app"
+        line(ok if snapshot["has_key"] else warn, "api key",
+             f"{source} — {snapshot['label']}, model {snapshot['model']}"
+             if snapshot["has_key"]
+             else "none yet. Rules still work; conversation and Q&A need a key")
+        line(ok, "providers", ", ".join(sorted(llm.PROVIDERS)))
+    except Exception as exc:  # noqa: BLE001
+        line(fail, "provider registry", str(exc))
+        problems += 1
+
+    try:
+        from .stt.selection import selection as speech
+
+        snapshot = speech.snapshot()
+        line(ok if snapshot["has_key"] else warn, "cloud speech",
+             f"{snapshot['label']} — used only when the local model comes back empty"
+             if snapshot["has_key"] else "off — local speech only")
+    except Exception as exc:  # noqa: BLE001
+        line(fail, "speech selection", str(exc))
+        problems += 1
 
     print("\n" + "=" * 72)
     if problems:
@@ -411,6 +556,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_test_stt(args.test_stt)
     if args.test_mic:
         return cmd_test_mic(float(args.test_mic))
+    if args.tune_wake_word:
+        return cmd_tune_wake_word(int(args.tune_wake_word), args.apply)
     if args.text:
         return cmd_text(args.text, args.dry_run)
 

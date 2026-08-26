@@ -11,7 +11,7 @@ from typing import Literal
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from . import paths
 
@@ -26,50 +26,72 @@ class AudioConfig(BaseModel):
 class WakeWordConfig(BaseModel):
     enabled: bool = True
     model: str = "hey_jarvis"
-    threshold: float = 0.5
+    # Measured, not chosen. Streaming 20 synthesised "hey jarvis" clips through
+    # openWakeWord across four gain/noise conditions, the peak score per
+    # utterance was:
+    #
+    #   threshold   heard    missed   false fires
+    #      0.50     62/80      18        0/40      <- the old default
+    #      0.40     67/80      13        0/40
+    #      0.30     73/80       7        1/40      <- here
+    #      0.20     78/80       2        3/40
+    #
+    # 0.50 was missing 22% of them, which is exactly the "I have to say it two
+    # or three times" complaint. Every one of those misses came from the
+    # Indian-accented voices — the native en-US and en-GB clips never scored
+    # below 0.979 in any condition, so this is the pretrained model's bias, not
+    # a microphone problem.
+    #
+    # The only thing that scores above 0.30 without being the wake word is the
+    # bare word "jarvis" (0.30 at worst); every other utterance tested — "hey
+    # google", "hey there", and the assistant's own commands — stayed under
+    # 0.04. So the cost of coming down this far is that saying "jarvis" alone
+    # may wake it, which is hardly wrong.
+    #
+    # Asymmetry is the reason for erring low: a miss costs a whole repeated
+    # sentence, a false wake costs a 140 ms cue and a discarded second.
+    # `--tune-wake-word` measures this on your own voice and microphone.
+    threshold: float = 0.3
     cooldown_sec: float = 2.0
-    #: What you hear when the wake word fires. config.yaml has documented this
-    #: for a while, but the field was missing here — so pydantic dropped the
-    #: setting and the acknowledgement never made a sound.
+    # What you hear when the wake word fires. Without any acknowledgement there
+    # is no way to know you were heard, so people say it twice.
+    #   voice — a short spoken cue ("Yes?" / "जी?"), matched to the language of
+    #           the last turn. Rendered in the background and cached; falls back
+    #           to the chime until it is ready or if the network is unavailable.
+    #   chime — a 140 ms rising two-note blip. Always available, never overlaps
+    #           what you say next, and language-neutral.
+    #   none  — silence, as it was before.
     acknowledge: Literal["voice", "chime", "none"] = "voice"
-    #: What the spoken acknowledgement says — one is picked at random each
-    #: time, so it doesn't feel like a recording.
-    #:
-    #: Every entry is a real word or phrase on purpose. "Mm-hmm" was the first
-    #: attempt and came out as an unintelligible mumble: neural voices are
-    #: trained on written language, and non-lexical sounds have no spelling
-    #: they can pronounce reliably.
-    #:
-    #: Keep them short — this plays before the microphone opens, so each
-    #: syllable is one the user waits through.
-    ack_text_en: list[str] = Field(
-        default_factory=lambda: ["Yes?", "I'm listening.", "Go ahead.", "I'm here."]
-    )
-    #: Feminine forms, to match the female Hindi voice.
-    ack_text_hi: list[str] = Field(
-        default_factory=lambda: ["जी?", "जी बोलिए.", "हाँ जी?", "सुन रही हूँ."]
-    )
-
-    @field_validator("ack_text_en", "ack_text_hi", mode="before")
-    @classmethod
-    def _accept_a_bare_string(cls, value: object) -> object:
-        """Tolerate `ack_text_en: "Yes?"` as well as a list.
-
-        The setting used to be a single string, and a config.yaml written
-        against that shouldn't stop the assistant from starting.
-        """
-        if isinstance(value, str):
-            return [value]
-        return value
-
-    def ack_texts(self, language: str) -> list[str]:
-        texts = self.ack_text_hi if (language or "").startswith("hi") else self.ack_text_en
-        return [t for t in texts if t and t.strip()]
 
 
 class VadConfig(BaseModel):
     backend: Literal["silero", "energy"] = "silero"
-    threshold: float = 0.5
+    # Measured, not chosen. Streaming 20 synthesised "hey jarvis" clips through
+    # openWakeWord across four gain/noise conditions, the peak score per
+    # utterance was:
+    #
+    #   threshold   heard    missed   false fires
+    #      0.50     62/80      18        0/40      <- the old default
+    #      0.40     67/80      13        0/40
+    #      0.30     73/80       7        1/40      <- here
+    #      0.20     78/80       2        3/40
+    #
+    # 0.50 was missing 22% of them, which is exactly the "I have to say it two
+    # or three times" complaint. Every one of those misses came from the
+    # Indian-accented voices — the native en-US and en-GB clips never scored
+    # below 0.979 in any condition, so this is the pretrained model's bias, not
+    # a microphone problem.
+    #
+    # The only thing that scores above 0.30 without being the wake word is the
+    # bare word "jarvis" (0.30 at worst); every other utterance tested — "hey
+    # google", "hey there", and the assistant's own commands — stayed under
+    # 0.04. So the cost of coming down this far is that saying "jarvis" alone
+    # may wake it, which is hardly wrong.
+    #
+    # Asymmetry is the reason for erring low: a miss costs a whole repeated
+    # sentence, a false wake costs a 140 ms cue and a discarded second.
+    # `--tune-wake-word` measures this on your own voice and microphone.
+    threshold: float = 0.3
     silence_ms: int = 650
     # Used instead of `silence_ms` while barely any speech has happened yet,
     # which is what a false start or a mid-thought pause looks like. Cutting
@@ -117,15 +139,9 @@ class SttConfig(BaseModel):
 
 class TtsConfig(BaseModel):
     backend: Literal["edge", "sapi", "none"] = "edge"
-    # One persona in both languages: Swara and Neerja are both warm female
-    # voices. The old pairing was a male Hindi voice with a female English one,
-    # which made the assistant sound like two different people.
-    voice_hi: str = "hi-IN-SwaraNeural"
-    voice_en: str = "en-IN-NeerjaExpressiveNeural"
-    # Prosody. `+10%` read as brisk and clipped; slightly under normal speed
-    # with a touch of lift sounds unhurried and friendly instead.
-    rate: str = "-4%"
-    pitch: str = "+3Hz"
+    voice_hi: str = "hi-IN-MadhurNeural"
+    voice_en: str = "en-IN-NeerjaNeural"
+    rate: str = "+10%"
     volume: str = "+0%"
     barge_in: bool = True
 
@@ -135,19 +151,24 @@ class TtsConfig(BaseModel):
 
 class BrainConfig(BaseModel):
     enabled: bool = True
-    model: str = "claude-opus-5"
+    # Which provider to start with, and which of its models. The user's own
+    # choice — pushed down by the desktop app's settings screen — overrides
+    # both; these are only the defaults for a fresh install or a bare
+    # `python -m jarvis`. An empty model means "whatever that provider's
+    # default is", so changing provider doesn't require changing both.
+    provider: Literal["anthropic", "openai", "gemini", "groq", "deepseek", "mistral"] = (
+        "anthropic"
+    )
+    model: str = ""
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
     max_tokens: int = 2048
-    rules_threshold: int = 78
+    # Fuzzy-match confidence below which the model is consulted. Measured on
+    # garbled-but-recoverable transcripts, real commands scored 70-77 and were
+    # being thrown away at 78 — a whole class of "it did not understand me" that
+    # was a threshold, not a model. Safe to lower only because a fuzzy match can
+    # no longer invert a direction (see _OPPOSITES in nlu/rules.py).
+    rules_threshold: int = 70
     history_turns: int = 6
-
-    @property
-    def api_key(self) -> str:
-        return os.environ.get("ANTHROPIC_API_KEY", "").strip()
-
-    @property
-    def available(self) -> bool:
-        return self.enabled and bool(self.api_key)
 
 
 class PermissionsConfig(BaseModel):
@@ -161,32 +182,20 @@ class ServerConfig(BaseModel):
     port: int = 8756
 
     @property
-    def resolved_port(self) -> int:
-        """The port to actually bind.
+    def bind_port(self) -> int:
+        """The port to actually listen on.
 
-        The desktop app picks a free port before spawning us and passes it in
-        JARVIS_PORT — it may not be 8756 if something else already holds that.
-        Ignoring it means the app health-checks a port nothing is listening on
-        and waits out its whole timeout, which looks like the engine never
-        starting.
+        The desktop app scans for a free one and passes it in `JARVIS_PORT`,
+        because 8756 may already be taken by something else — and nothing here
+        read it. The app would then poll the port it chose while the engine sat
+        on the one from config.yaml, and give up fifteen minutes later with
+        "The engine did not respond in time." An occupied port is not a rare
+        situation on a machine you are handing software to.
         """
         raw = os.environ.get("JARVIS_PORT", "").strip()
-        if raw:
-            try:
-                chosen = int(raw)
-            except ValueError:
-                log_config_warning("JARVIS_PORT is not a number: %r" % raw)
-            else:
-                if 1 <= chosen <= 65535:
-                    return chosen
-                log_config_warning("JARVIS_PORT out of range: %d" % chosen)
+        if raw.isdigit() and 1 <= int(raw) <= 65535:
+            return int(raw)
         return self.port
-
-
-def log_config_warning(message: str) -> None:
-    import logging
-
-    logging.getLogger(__name__).warning("%s — using config.yaml instead", message)
 
 
 class SecurityConfig(BaseModel):
@@ -218,6 +227,31 @@ class AssistantConfig(BaseModel):
     followup_sec: float = 6.0
 
 
+class MessagingConfig(BaseModel):
+    """How "say hi to sana" turns into a sent message."""
+
+    #: Used whenever the user names no app. WhatsApp because that is what the
+    #: phrase means in practice here, but it is a setting rather than a constant
+    #: so it can be someone else's default.
+    default_app: Literal["whatsapp", "sms", "telegram", "signal", "slack"] = "whatsapp"
+
+    #: Whether to press send, or leave the draft open with the cursor in it.
+    #:
+    #: On by default, because "send hi to sana" asks for a message to be sent and
+    #: stopping one keystroke short is a strange place to stop. It is safe to
+    #: default on only because of the two gates around it: the command is
+    #: CRITICAL, so it is read back and confirmed before anything opens, and the
+    #: keystroke is only sent once the messaging app is confirmed to hold focus.
+    #: Turn it off to review every message before it goes.
+    auto_send: bool = True
+
+    #: How long to wait for the app's window to take focus before giving up on
+    #: pressing send. Generous: WhatsApp Desktop cold-starting is slow, and the
+    #: consequence of being impatient is a message left unsent, which the reply
+    #: then says.
+    focus_timeout_sec: float = 6.0
+
+
 class Settings(BaseModel):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     wake_word: WakeWordConfig = Field(default_factory=WakeWordConfig)
@@ -229,6 +263,7 @@ class Settings(BaseModel):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     assistant: AssistantConfig = Field(default_factory=AssistantConfig)
+    messaging: MessagingConfig = Field(default_factory=MessagingConfig)
 
 
 def bootstrap_config() -> None:

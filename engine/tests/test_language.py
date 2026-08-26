@@ -62,10 +62,35 @@ def test_languages_hindi_gets_mistaken_for_count_as_hindi(label):
                            whisper_probability=0.8) == "hi"
 
 
-def test_an_ambiguous_followup_inherits_the_conversation():
-    """"aur?" after a Hindi turn is Hindi, not a reset to English."""
-    assert detect_language("aur", previous="hi") == "hi"
-    assert detect_language("aur", previous="en") == "en"
+def test_a_genuinely_ambiguous_followup_inherits_the_conversation():
+    """A bare app name is the same word in both languages, so the only signal
+    left is what the conversation was already in."""
+    assert detect_language("spotify", previous="hi") == "hi"
+    assert detect_language("spotify", previous="en") == "en"
+
+
+def test_a_whole_english_sentence_does_not_inherit_hindi():
+    """The bug this guards: asking "explain quantum computing to me" straight
+    after "chrome kholo" was answered in Hindi, because inheritance applied to
+    an utterance far too long to be ambiguous."""
+    for text in (
+        "explain quantum computing to me",
+        "give me three ideas for dinner",
+        "who invented the telephone",
+    ):
+        assert detect_language(text, previous="hi") == "en", text
+
+
+def test_a_whole_hindi_sentence_is_still_hindi_after_an_english_turn():
+    for text in ("mujhe quantum computing samjhao", "aaj ka mausam kaisa hai"):
+        assert detect_language(text, previous="en") == "hi", text
+
+
+def test_a_technology_loanword_alone_does_not_flip_to_english():
+    """"battery", "volume" and "file" live inside Hindi sentences constantly,
+    so they are not evidence of anything."""
+    for text in ("battery", "volume", "aur battery"):
+        assert detect_language(text, previous="hi") == "hi", text
 
 
 def test_hinglish_with_an_english_verb_stays_hindi():

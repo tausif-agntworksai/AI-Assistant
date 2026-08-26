@@ -60,7 +60,7 @@ class Capability(str, enum.Enum):
 
     MICROPHONE = "microphone"          # always-on listening for the wake word
     SPEAKER = "speaker"                # spoken replies
-    CAMERA = "camera"                  # declared, not used by any skill today
+    CAMERA = "camera"                  # take a photo, open the camera app
     SCREEN = "screen_capture"          # screenshots
     FILES = "files"                    # open folders, search personal folders
     CLIPBOARD = "clipboard"            # read and write the clipboard
@@ -115,6 +115,8 @@ _CATEGORY_CAPABILITY: dict[str, Capability] = {
     "files": Capability.FILES,
     "knowledge": Capability.NETWORK,
     "messaging": Capability.MESSAGING,
+    "camera": Capability.CAMERA,
+    "calls": Capability.WINDOWS,
     "system": Capability.POWER,
     "web": Capability.NETWORK,
 }

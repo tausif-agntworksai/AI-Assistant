@@ -42,33 +42,30 @@ log = logging.getLogger(__name__)
 # query field, which turned POST /command into a 422 and the WebSocket route
 # into a 403 handshake rejection.
 
-# The HUD is an Electron page loaded from disk, and Chromium does not label
-# that one way. A `fetch()` from a file:// page sends `Origin: null`, but the
-# WebSocket handshake from the same page sends `Origin: file://`. Accepting
-# only "null" refused every HUD socket while HTTP kept working, so the app sat
-# retrying forever against an engine that was up and healthy.
+# The HUD is an Electron page loaded from disk, and Chromium spells that origin
+# two different ways depending on the request: `null` for an HTTP fetch, but the
+# literal `file://` for a WebSocket handshake from the very same page. Accepting
+# only one of them refused every socket while letting every fetch through — the
+# HUD reconnected forever and, since engine state arrives over that socket, sat
+# on "starting…" indefinitely.
 #
-# Both still have to present the token — an origin check alone would be worth
-# nothing, since a sandboxed iframe on any site also reports `null`.
-FILE_ORIGIN = "null"
-FILE_ORIGINS = frozenset({"null", "file://"})
-
-
-def origin_allowed(origin: str | None) -> bool:
-    """True when a request may proceed on origin grounds alone.
-
-    No `Origin` header at all is the desktop app's main process calling us
-    with Node's fetch, which no web page can imitate.
-    """
-    return origin is None or origin in FILE_ORIGINS
+# Both are safe to allow because neither is what guards this API: the launch
+# token is. A page on a real website cannot forge either value, and a local HTML
+# file still cannot read the token.
+LOCAL_ORIGINS = frozenset({"null", "file://"})
 
 # WebSocket handshakes can't carry an Authorization header from a browser, so
 # the token rides in the subprotocol list instead of a query string — query
 # strings end up in logs and referrers.
 WS_PROTOCOL = "jarvis.bearer"
 
-# Generous for a person talking, useless for a script hammering the Claude key.
+# Generous for a person talking, useless for a script hammering the model key.
 COMMAND_LIMIT = RateLimiter(max_calls=60, window_sec=60.0)
+
+# Key checks and model listings each cost a live call to a provider with a
+# caller-supplied key. Enough for someone fixing a typo, useless for anyone
+# using this machine to test a list of stolen keys.
+VALIDATE_LIMIT = RateLimiter(max_calls=12, window_sec=60.0)
 
 
 class Command(BaseModel):
@@ -95,6 +92,35 @@ class ConsentPayload(BaseModel):
     granted: dict[str, bool] = Field(default_factory=dict)
 
 
+class LlmConfig(BaseModel):
+    """Request body for POST /llm — the user's provider, model and key.
+
+    The key arrives here, is held in memory, and is written nowhere. The
+    desktop app is what stores it, encrypted with the OS keychain; this
+    process only borrows it for the length of a request. `api_key` omitted
+    means "keep whatever you have"; an empty string means "forget it".
+    """
+
+    provider: str = Field(max_length=32)
+    model: str = Field(default="", max_length=128)
+    api_key: str | None = Field(default=None, max_length=512)
+
+
+class LlmProbe(BaseModel):
+    """Request body for POST /llm/validate and /llm/models."""
+
+    provider: str = Field(max_length=32)
+    api_key: str = Field(max_length=512)
+    model: str = Field(default="", max_length=128)
+
+
+class SpeechConfig(BaseModel):
+    """Request body for POST /speech — the optional cloud recogniser."""
+
+    provider: str = Field(default="", max_length=32)
+    api_key: str | None = Field(default=None, max_length=512)
+
+
 def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -109,7 +135,7 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
     # Only the file:// HUD, and only for the two headers it actually sends.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=sorted(FILE_ORIGINS),
+        allow_origins=sorted(LOCAL_ORIGINS),
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
         max_age=600,
@@ -122,7 +148,7 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
         # A browser page from a real website must never get through, even in
         # the hypothetical where it has somehow learned the token.
         origin = request.headers.get("origin")
-        if not origin_allowed(origin):
+        if origin is not None and origin not in LOCAL_ORIGINS:
             log.warning("Rejected a request from origin %r", origin[:80])
             return JSONResponse({"error": "forbidden origin"}, status_code=403)
 
@@ -165,8 +191,10 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
 
     @app.get("/status")
     async def status() -> dict[str, Any]:
+        from . import llm
         from .nlu.llm import brain
         from .skills.registry import registry
+        from .stt.selection import selection as speech
 
         return {
             "ok": True,
@@ -174,6 +202,8 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
             "language": orchestrator.last_language,
             "skills": len(registry.all()),
             "brain": brain.available,
+            "llm": llm.selection.snapshot(),
+            "speech": speech.snapshot(),
             "wake_word": getattr(orchestrator.wake, "available", False),
             "listening": orchestrator.listening_enabled,
             "microphone": orchestrator.microphone_health(),
@@ -239,6 +269,88 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
         await asyncio.to_thread(orchestrator.apply_consent)
         return consent.snapshot()
 
+    # -- the language model and the speech recogniser -----------------------
+
+    @app.get("/llm")
+    async def get_llm() -> dict[str, Any]:
+        from . import llm
+        from .stt import selection as speech
+
+        return {
+            "providers": llm.provider_list(),
+            "selected": llm.selection.snapshot(),
+            "speech_providers": speech.provider_list(),
+            "speech": speech.selection.snapshot(),
+        }
+
+    @app.post("/llm")
+    async def set_llm(payload: LlmConfig) -> Any:
+        from . import llm
+
+        try:
+            llm.selection.configure(payload.provider, payload.model, payload.api_key)
+        except llm.LlmError as exc:
+            return JSONResponse({"error": exc.friendly}, status_code=400)
+        return llm.selection.snapshot()
+
+    @app.post("/llm/validate")
+    async def validate_llm(payload: LlmProbe) -> Any:
+        from . import llm
+
+        # Rate-limited for the reason the sibling calculator spells out: an
+        # unlimited "is this key good?" endpoint is a free oracle for testing
+        # stolen keys, and this one is reachable from any process on the machine
+        # that has the launch token.
+        allowed, retry_after = VALIDATE_LIMIT.allow()
+        if not allowed:
+            return JSONResponse(
+                {"error": f"Too many key checks — wait {retry_after}s.",
+                 "code": "rate-limited"},
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+        try:
+            resolved = await asyncio.to_thread(
+                llm.validate_key, payload.provider, payload.api_key, payload.model
+            )
+        except llm.LlmError as exc:
+            log.info("Key check failed for %s: %s", payload.provider, exc)
+            return JSONResponse({"ok": False, "error": exc.friendly}, status_code=400)
+        # `resolved` may not be what was asked for: a provider can retire a
+        # model without retiring the key, and the caller should save what
+        # actually works rather than what it hoped for.
+        return {"ok": True, "model": resolved}
+
+    @app.post("/llm/models")
+    async def llm_models(payload: LlmProbe) -> Any:
+        from . import llm
+
+        allowed, retry_after = VALIDATE_LIMIT.allow()
+        if not allowed:
+            return JSONResponse(
+                {"error": f"Too many requests — wait {retry_after}s."},
+                status_code=429,
+            )
+        try:
+            models = await asyncio.to_thread(
+                llm.list_models, payload.provider, payload.api_key
+            )
+        except llm.LlmError as exc:
+            # Lenient on purpose: an empty model picker is a dead end, so fall
+            # back to the handful we know about and say what went wrong.
+            return {"models": llm.known_models(payload.provider), "error": exc.friendly}
+        return {"models": models}
+
+    @app.post("/speech")
+    async def set_speech(payload: SpeechConfig) -> Any:
+        from .stt.selection import selection as speech
+
+        try:
+            speech.configure(payload.provider, payload.api_key)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return speech.snapshot()
+
     # -- commands -----------------------------------------------------------
 
     @app.post("/command")
@@ -283,7 +395,7 @@ def create_app(orchestrator):  # noqa: ANN001 - avoids a circular import
             if p.strip()
         ]
         origin = ws.headers.get("origin")
-        if not origin_allowed(origin) or len(offered) < 2 \
+        if (origin is not None and origin not in LOCAL_ORIGINS) or len(offered) < 2 \
                 or offered[0] != WS_PROTOCOL or not token_matches(offered[1]):
             log.warning("Rejected a WebSocket handshake (origin=%r)", (origin or "")[:80])
             await ws.close(code=1008)
@@ -345,9 +457,9 @@ def serve(orchestrator) -> None:  # noqa: ANN001
     config = uvicorn.Config(
         app,
         host=host,
-        port=settings.server.resolved_port,
+        port=settings.server.bind_port,
         log_level="warning",
         access_log=False,
     )
-    log.info("HUD API on http://%s:%d (token required)", host, settings.server.resolved_port)
+    log.info("HUD API on http://%s:%d (token required)", host, settings.server.bind_port)
     uvicorn.Server(config).run()

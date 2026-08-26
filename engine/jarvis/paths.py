@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import sys as _sys
 from pathlib import Path
 
 
@@ -25,11 +26,24 @@ ENGINE_DIR: Path = (
 
 PROJECT_DIR: Path = ENGINE_DIR.parent
 
-# Writable runtime root. %LOCALAPPDATA%\Jarvis on Windows.
-DATA_DIR: Path = Path(
-    os.environ.get("JARVIS_DATA_DIR")
-    or (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Jarvis")
-)
+
+def _default_data_dir() -> Path:
+    """Where this OS expects an application to keep its own data.
+
+    Falling back to `Path.home() / "Jarvis"` when `LOCALAPPDATA` is unset —
+    which is every non-Windows machine — would have dropped a bare `~/Jarvis`
+    into the user's home directory and left the models there.
+    """
+    if sys.platform == "win32":
+        return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Jarvis"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Jarvis"
+    # Linux and the rest: the XDG base directory spec.
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "jarvis"
+
+
+# Writable runtime root. Overridable for tests via JARVIS_DATA_DIR.
+DATA_DIR: Path = Path(os.environ.get("JARVIS_DATA_DIR") or _default_data_dir())
 
 MODELS_DIR: Path = DATA_DIR / "models"
 LOGS_DIR: Path = DATA_DIR / "logs"
@@ -62,6 +76,31 @@ ENV_FILE: Path = _user_file(".env")
 APP_INDEX_CACHE: Path = CACHE_DIR / "app_index.json"
 AUDIT_LOG: Path = LOGS_DIR / "audit.jsonl"
 ENGINE_LOG: Path = LOGS_DIR / "engine.log"
+
+
+def pictures_dir() -> Path:
+    """The user's Pictures folder, by whatever name this OS gives it.
+
+    Not under DATA_DIR: a photo the user asked for is theirs, and belongs
+    somewhere they would look for it rather than in an application cache they do
+    not know exists.
+    """
+    home = Path.home()
+    if _sys.platform == "win32":
+        # The folder can be redirected (OneDrive does this by default), and the
+        # registry is the only place that knows where it actually went.
+        try:
+            import winreg
+
+            key = (r"Software\Microsoft\Windows\CurrentVersion"
+                   r"\Explorer\Shell Folders")
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
+                value, _ = winreg.QueryValueEx(handle, "My Pictures")
+            if value:
+                return Path(value)
+        except Exception:  # noqa: BLE001 - fall through to the usual place
+            pass
+    return home / "Pictures"
 
 
 def ensure_dirs() -> None:

@@ -36,7 +36,7 @@ reconnect freely.
 ```
 
 The microphone is the thing sign-in protects. The engine boots with its
-listening loop shut and opens it only when the app says a verified, approved
+listening loop shut and opens it only when the app says a verified, signed-in
 person is present — so the login screen is not a page you click past, it is
 what decides whether the machine is listening at all.
 
@@ -47,7 +47,7 @@ transcription, no storage, no network.
 ### The listening loop
 
 ```
-IDLE ──"hey jarvis" | Ctrl+Alt+J | click the orb──▶ LISTENING
+IDLE ──"hey jarvis" | Ctrl+Alt+J | click the orb──▶ ACK ──▶ LISTENING
 LISTENING ──trailing silence──▶ THINKING ──▶ ACTING ──▶ SPEAKING ──▶ IDLE
                                      │                        │
                      rules match? ───┴─── no ──▶ Claude       └──▶ FOLLOW-UP
@@ -61,6 +61,15 @@ don't recognise go to Claude.
 For six seconds after it finishes speaking, Jarvis keeps listening without the
 wake word, so a correction (`“nahi, chrome”`) or a second command lands
 straight away.
+
+**The wake word answers back.** A short `“Yes?”` — or `“हाँ?”` if the last turn
+was Hindi — so you know you were heard rather than saying it twice. Latency is
+the whole constraint here: a cue that arrives 400 ms late lands on top of your
+first word, so nothing is synthesised at wake time. The spoken cues are
+rendered once in the background and cached; until they are ready, and whenever
+the network is not, a 140 ms rising chime generated with numpy covers for them.
+Set `wake_word.acknowledge` to `chime` if you would rather have the shorter cue
+(it overlaps less of what you say next), or `none` for silence.
 
 ### Understanding two languages at once
 
@@ -85,6 +94,67 @@ a confident Whisper label, including the languages Hindi gets mistaken for;
 then distinctive English words; and finally the language the conversation was
 already in, so `“aur battery?”` doesn't reset to English. Claude is told the
 answer explicitly rather than left to infer it from words that look like both.
+
+---
+
+## Bringing your own model
+
+The installer ships **no API key**. That is the point of it being an installer:
+a key baked into something you hand to strangers is both extractable and billed
+to whoever built it. So Jarvis is useful the moment it starts, and asks for a
+key only when something actually needs one.
+
+```
+  "hey jarvis" · "hello" · "thanks" · "who are you"      ─┐
+  "chrome kholo" · "volume 40" · "screenshot lo"          ├─ offline rules
+  "battery kitni hai" · "5 minute ka timer laga do"      ─┘  no key, no network,
+                                                             no cost, instant
+
+  "explain quantum computing" · "translate this"         ──▶ needs a model
+  anything phrased in a way no rule recognises                and therefore a key
+```
+
+**The router decides, and it shows you what it decided.** Each turn in the HUD
+is badged `offline`, `local` or `AI`, and the footer keeps a running count for
+the session — so "how much of this is the AI?" is a number you can read rather
+than a claim you have to take. Of 77 skills, 72 are reachable with no key at
+all; the model is consulted only when the rules do not recognise a phrasing,
+and for the four genuinely conversational skills.
+
+The first time an utterance needs the model and no key is set, Jarvis says so
+out loud and opens settings — rather than going quiet and leaving you to guess
+whether it heard you.
+
+Six providers, and you pick the **model** as well as the provider:
+
+| Provider | Why you might pick it |
+|---|---|
+| Anthropic (Claude) | What the prompts and tool-use were built against |
+| Groq | Answers in a couple of hundred milliseconds — the difference between a conversation and a progress bar |
+| OpenAI, Gemini, DeepSeek, Mistral | Whatever you already have a key for |
+
+Model choice matters more here than in a chat app: a spoken reply that takes
+six seconds feels broken even when it is correct, so every model in the list
+carries a *fastest / balanced / most capable* badge and you can trade depth for
+latency deliberately.
+
+**Where the key lives.** In the desktop app, encrypted with your own Windows
+account's key (DPAPI, via Electron `safeStorage`) — not in `localStorage`, and
+never in a page. The renderer can set a key and ask whether one exists; there
+is no call that reads one back. It is lent to the engine in memory for as long
+as it runs, written to no file and stripped from every log line. A key is
+verified against the provider *before* it is saved, so a typo fails at the
+settings screen rather than on your first question.
+
+### Speech recognition, optionally
+
+Speech stays on this machine by default. Hindi mixed with English is the
+hardest case for the local model, and a cloud recogniser is noticeably better
+at it — Deepgram's `nova-3` is built for exactly that — so you can add one as a
+fallback in the same panel. The behaviour is narrow and the panel says so:
+**audio only leaves the machine after both local passes have already failed to
+make sense of it.** A command the rules recognise never reaches a network, and
+neither does one the local model transcribes cleanly.
 
 ---
 
@@ -143,9 +213,12 @@ cd engine
 powershell -ExecutionPolicy Bypass -File setup.ps1     # venv + dependencies
 ```
 
-Add your Anthropic API key to `engine\.env` — everything works without it
-except conversation, questions, translation and the fallback that understands
-unusual phrasings:
+Nothing else is required to start. Around fifty commands — opening apps,
+volume, brightness, timers, battery, screenshots — are matched by offline rules
+and need no API key at all. Conversation, questions and translation do, and
+you add that **in the app** rather than in a file (see *Bringing your own
+model* below). For a command-line-only setup you can still put one in
+`engine\.env`:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
@@ -201,34 +274,86 @@ typed command exercises exactly the path a spoken one takes.
 .\run-engine.bat --test-tts "नमस्ते, मैं जार्विस हूँ"        # check the Hindi voice
 .\run-engine.bat --test-mic 5                              # record 5s and transcribe
 .\run-engine.bat --list-devices                            # pick the right mic
+.\run-engine.bat --tune-wake-word                          # measure your own voice
 ```
 
+### If the wake word needs repeating
+
+`--tune-wake-word` asks you to say "hey jarvis" five times, records the peak
+detection score for each, then listens to your room saying nothing and records
+the highest score *that* produced. It recommends a threshold between the two, or
+tells you that no such threshold exists — which means the microphone or the room
+is the problem, not the setting. Add `--apply` to write the result to
+`config.yaml`.
+
+Two things worth knowing before you run it, both measured (see
+[docs/HEARING.md](docs/HEARING.md)):
+
+- **Say it as one connected phrase.** A pause between "hey" and "jarvis" costs
+  up to 0.86 of detection score. Slowing down and separating the words after a
+  miss — the natural reaction — makes the next attempt score *lower*.
+- **The pretrained model is weaker on accented English.** Native en-US and
+  en-GB test clips never scored below 0.979; Indian-accented clips of the same
+  phrase ranged from 0.079 to 0.999. The shipped threshold of 0.30 is set for
+  the latter, and there is no larger wake-word model to move to — only four
+  pretrained ones exist and only one of them says "jarvis".
+
 Run the tests with `python -m pytest` from `engine\`.
+
+---
+
+## Without internet
+
+Most of what Jarvis does never touches the network, and that half keeps working
+with the router unplugged: opening and closing apps, volume, brightness,
+windows, sleep and shutdown, timers and reminders, notes, the clipboard, file
+search, screenshots, the camera, and answering calls. Around fifty commands.
+
+Four things do need a connection — the model, the weather, the news, and web
+search — and offline they say so:
+
+> *"The weather needs the internet, and there's no connection right now.
+> Everything on your computer still works."*
+
+That replaced **"That didn't work."**, which was indistinguishable from a bug and
+invited you to repeat a command that could not succeed. The check is only run for
+skills that declared they need one, so a local command never waits on it, and an
+inconclusive check counts as online — a wrong "you're offline" would block
+something that works, which is worse than a slow failure.
+
+Speech keeps working too: replies fall back from Edge's neural voices to the
+Windows offline voice, and the wake-word acknowledgement falls back to a chime
+if its spoken cues were never cached.
+
+Two things are deliberately *not* gated. `open_website` and `open_url` still open
+— they can point at `localhost`, a router or an intranet host, all of which
+work offline — but the reply adds *"there's no internet right now, so it may
+not load"* so a blank tab does not look like a failed command.
 
 ---
 
 ## Signing in
 
 If `desktop\.env` names a Firebase project, Jarvis will not open the
-microphone until someone with a verified, admin-approved account is signed in.
-The gate is the same one the AI Calculator enforces, in the same order:
+microphone until someone is signed in. Accounts are **self-serve** — there is
+no approval queue and no administrator:
 
 ```
-sign in → verified email → admin approval → [authenticator app] → microphone opens
+sign up → verify your email → set up an authenticator → microphone opens
 ```
 
-Point it at the same Firebase project as the AI Calculator and one account
-covers both: approving someone from the calculator's **Manage access**
-dashboard sets the `approved` custom claim, which Jarvis reads out of the ID
-token. There is no server here to write that claim, so Jarvis files its own
-pending request straight into Firestore — safe because `firestore.rules` runs
-on Google's servers and lets you create only a *pending* request, only for
-your own uid, only with your own verified email.
+The authenticator is not optional. Once nobody is vetting new accounts, a
+password on its own is one leak away from someone else's machine and someone
+else's API key, so enrolling a TOTP app (Google Authenticator, Authy,
+1Password) is part of signing up rather than a setting. That needs Firebase
+Authentication with Identity Platform, which needs the **Blaze** plan — no
+per-use charge at this volume, but a billing account has to be attached.
 
 Copy `desktop\.env.example` to `desktop\.env` and fill in the web app config
 from Firebase console → Project settings → Your apps. Leave it blank and
 Jarvis runs unlocked and says so on screen, rather than showing a sign-in
-prompt that couldn't succeed.
+prompt that couldn't succeed. `JARVIS_REQUIRE_AUTH=false` keeps the screens but
+stops them gating the assistant — for local development, not for shipping.
 
 Where the security actually is:
 
@@ -308,8 +433,58 @@ a no, and with nothing able to ask, gated actions are refused rather than
 allowed. Shutdown and restart also run on a 15-second delay — say **“cancel
 shutdown”** to stop one.
 
-Messaging never sends by itself. `send_whatsapp` opens the chat with the
-message typed and waits for you to press send.
+Messaging is read back before anything opens: **"say hi to sana"** is confirmed
+as *"Send “Hi” to Sana?"*, with the contact name it resolved to, so a
+wrong match is caught before a stranger gets the message. After you agree, the
+chat opens with the message typed and Jarvis presses send — but only once it
+has confirmed the messaging app actually holds focus, so a slow window leaves
+the draft sitting there rather than firing a stray keystroke into whatever was
+in front. Set `messaging.auto_send: false` to always stop at the draft.
+
+Naming an app (**"message rahul on telegram"**) overrides the default; otherwise
+it uses `messaging.default_app`, which is WhatsApp. `compose_email` never
+auto-sends — mail clients differ too much for a blind keystroke to mean
+send.
+
+If two saved contacts are both close to the name you said, it stops and asks
+which one rather than picking the higher score. That is the one mistake here
+that reaches a stranger and cannot be undone.
+
+### Camera
+
+**"take a photo"** / **"photo le lo"** does not open the Camera app. It opens the
+device, discards eight frames while auto-exposure settles — otherwise the
+first photo of a session is a dark rectangle — grabs one, releases the camera
+and saves it to `Pictures\Jarvis`. The device is closed on every path out,
+including the failures: a webcam left with its light on after one photo is not
+something to ship.
+
+**"open the camera"** is the separate, explicit request that hands you the
+Windows Camera app.
+
+### Calls
+
+**"answer the call"**, **"pick up"**, **"call uthao"** — and **"hang up"**,
+**"call kaat do"** — work for WhatsApp Desktop, Teams, Zoom and Google
+Chat/Meet calls ringing on this computer.
+
+Be aware of what this is. None of those apps has an API or a documented hotkey
+for "answer", so the only available route is the one a person uses: find the
+window that is ringing, bring it to the front, press the key that accepts. Two
+consequences are designed for rather than hoped away:
+
+- **Nothing is sent unless the ringing window was found and confirmed to have
+  come forward.** A stray `Enter` or `Escape` into whatever happened to be
+  focused could do anything. Not finding it says *"I can't see a call
+  ringing"*, which is true and useful.
+- **A browser call needs its tab to be the one you are looking at.** A
+  background tab receives no keystrokes, and nothing outside the browser can
+  change that, so the reply says so.
+
+**Calls to your phone number are not here and cannot be.** A Windows machine has
+no cellular radio and no access to the phone's call stack — that needs the
+mobile client, which is not built. The reply says this rather than failing
+silently, so it is heard once instead of discovered repeatedly.
 
 ---
 
@@ -386,7 +561,7 @@ Notable settings:
 | `stt.cpu_threads` | `4` | More was measurably *slower* — 16 threads ran ~40% worse than 4. |
 | `vad.patience_silence_ms` | `1300` | The longer endpoint used while barely any speech has happened, so a pause between “chrome” and “kholo” doesn't end the turn. |
 | `assistant.followup_sec` | `6` | How long the microphone stays open after a reply, so a correction needs no wake word. `0` disables it. |
-| `wake_word.threshold` | `0.5` | Lower is more sensitive; raise toward 0.7 if it triggers on its own. |
+| `wake_word.threshold` | `0.3` | Lower is more sensitive. Measured: 0.5 missed 22% of utterances and 0.3 misses 9%, while the only thing that falsely scores above 0.3 is the bare word "jarvis". Run `--tune-wake-word` to measure your own voice. |
 | `security.require_session` | `false` | Refuse to open the microphone until someone signs in. The desktop app turns this on for its own launches; leaving it false keeps `python -m jarvis` usable from a terminal. |
 | `brain.model` | `claude-opus-5` | Thinking stays on: with it disabled this model can emit a tool call as plain text that silently never runs. |
 | `brain.effort` | `low` | Keeps spoken replies quick. |
@@ -462,11 +637,13 @@ engine/
 desktop/
   src/main.ts           windows, tray, hotkey, and which screen you're on
   src/engine.ts         spawns and supervises the Python engine
-  src/config.ts         the Firebase project and the admin allowlist
+  src/config.ts         the Firebase project and what the gate enforces
   src/consent.ts        the capability manifest and its store
+  src/llmKeys.ts        the user's API keys, encrypted with the OS keychain
   src/auth/             Firebase over REST, and the session that gates the mic
-  renderer/auth.html    sign in, verify, wait for approval, enrol 2FA
-  renderer/consent.html the first-run permission screen
-  renderer/index.html   the HUD
+  renderer-src/         the React app: three entry points, one design system
+    src/theme.css       one token vocabulary, light and dark
+    src/screens/        Hud, Auth, Consent, Settings
+    src/useEngine.ts    the WebSocket, the reconnect loop, the event reducer
   build/permissions.txt shown by the installer, before anything is installed
 ```

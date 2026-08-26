@@ -1,14 +1,15 @@
-"""Claude fallback — understands anything the local rules didn't.
+"""The language model — understands anything the local rules didn't.
 
 Two jobs in one call: pick a skill (via tool use) when the user wants an
 action, or just answer when they want a conversation. The skill registry
-generates the tool schemas, so a new skill is reachable by Claude the moment
+generates the tool schemas, so a new skill is reachable by the model the moment
 it's written.
 
-Thinking is deliberately left ON. Disabling it on this model can make a tool
-call arrive as plain text in the visible response — the turn succeeds, the
-call never runs, and nothing errors. That failure would be invisible in a
-voice assistant, so latency is managed with a low effort level instead.
+Which model is a user setting, not a constant. Everything provider-specific
+lives in `jarvis.llm`; this module owns the prompt, the conversation history and
+the translation between a `Completion` and a `BrainResult`. That split is what
+lets someone paste a Groq key and have every one of the 72 skills work through
+it without a line changing here.
 """
 
 from __future__ import annotations
@@ -18,9 +19,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .. import llm
+
 log = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are Jarvis, a voice assistant running on the user's Windows laptop.
+SYSTEM_PROMPT = """You are Jarvis, a voice assistant running on the user's computer.
 
 You are spoken to and you answer out loud, so your replies are read by a
 text-to-speech voice. Keep them short — one or two sentences for anything
@@ -66,6 +69,14 @@ class BrainResult:
     latency: float = 0.0
     refused: bool = False
     error: str = ""
+    #: Set when the failure is "nobody has given me a key yet", which the
+    #: orchestrator answers by opening settings rather than by apologising.
+    needs_key: bool = False
+    #: Which kind of failure, from `llm.base.ErrorKind`. The orchestrator needs
+    #: to tell "your wi-fi is down" from "your key is wrong" without reading
+    #: the English sentence in `error`, and a connection failure is also the
+    #: best evidence available about connectivity.
+    error_kind: str = ""
 
     @property
     def has_actions(self) -> bool:
@@ -83,26 +94,28 @@ class Brain:
 
             cfg = settings.brain
         self.cfg = cfg
-        self._client = None
         self._history: list[dict[str, Any]] = []
+        # Seed the runtime selection from config.yaml. The desktop app
+        # overwrites this the moment it pushes the user's own choice down.
+        try:
+            llm.selection.configure(cfg.provider, cfg.model)
+        except llm.LlmError as exc:
+            log.error("brain.provider in config.yaml is not a known provider: %s", exc)
 
     @property
     def available(self) -> bool:
-        return self.cfg.available
+        """True when there is a key to use — the user's, or one from `.env`."""
+        return bool(self.cfg.enabled) and llm.selection.available
 
-    def _ensure_client(self):
-        if self._client is not None:
-            return self._client
-        import anthropic
-
-        self._client = anthropic.Anthropic(api_key=self.cfg.api_key)
-        log.info("Claude brain ready (%s, effort=%s)", self.cfg.model, self.cfg.effort)
-        return self._client
+    @property
+    def describe(self) -> str:
+        snapshot = llm.selection.snapshot()
+        return f"{snapshot['label']} ({snapshot['model']})"
 
     # -- prompt assembly ----------------------------------------------------
 
-    def _system_blocks(self) -> list[dict[str, Any]]:
-        """Stable system prompt, marked for prompt caching.
+    def _system_prompt(self) -> str:
+        """The stable prompt. Marked for caching by whichever provider supports it.
 
         Nothing volatile goes in here — a timestamp or battery level would
         change the prefix on every request and defeat the cache. Live context
@@ -112,12 +125,7 @@ class Brain:
 
         names = [e.name for e in app_index.entries[:120]]
         installed = ", ".join(names) if names else "(app index not built yet)"
-
-        return [{
-            "type": "text",
-            "text": f"{SYSTEM_PROMPT}\n\nApps available on this machine: {installed}",
-            "cache_control": {"type": "ephemeral"},
-        }]
+        return f"{SYSTEM_PROMPT}\n\nApps available on this machine: {installed}"
 
     @staticmethod
     def _language_note(language: str) -> str:
@@ -157,93 +165,90 @@ class Brain:
     ) -> BrainResult:
         """Route an utterance: pick tools, answer, or both."""
         if not self.available:
-            return BrainResult(error="no API key configured")
+            return BrainResult(error="no API key configured", needs_key=True)
 
         from ..skills.registry import registry
 
-        client = self._ensure_client()
-        tools = registry.tool_schemas()
-
+        provider = llm.selection.provider
         user_turn = self._language_note(language) + self._context_note(context) + text
         messages = [*self._history, {"role": "user", "content": user_turn}]
 
         t0 = time.perf_counter()
         try:
-            response = client.messages.create(
-                model=self.cfg.model,
-                max_tokens=self.cfg.max_tokens,
-                system=self._system_blocks(),
+            completion = provider.complete(
+                system=self._system_prompt(),
                 messages=messages,
-                tools=tools,
-                thinking={"type": "adaptive"},
-                output_config={"effort": self.cfg.effort},
+                tools=registry.tool_schemas(),
+                api_key=llm.selection.api_key,
+                model=llm.selection.active_model,
+                max_tokens=self.cfg.max_tokens,
+                effort=self.cfg.effort,
             )
-        except Exception as exc:  # noqa: BLE001 - the assistant must stay up
-            log.error("Claude request failed: %s: %s", type(exc).__name__, exc)
-            return BrainResult(error=f"{type(exc).__name__}: {exc}",
+        except llm.LlmError as exc:
+            log.error("%s request failed: %s", provider.id, exc)
+            return BrainResult(error=exc.friendly, error_kind=exc.kind,
                                latency=time.perf_counter() - t0)
+        except Exception as exc:  # noqa: BLE001 - the assistant must stay up
+            log.exception("%s request failed unexpectedly", provider.id)
+            from .. import net
+
+            return BrainResult(
+                error=f"{type(exc).__name__}: {exc}",
+                error_kind="network" if net.looks_like_connectivity(exc) else "other",
+                latency=time.perf_counter() - t0,
+            )
 
         latency = time.perf_counter() - t0
 
-        # Safety classifiers can decline a request; the HTTP call still
-        # succeeds, so this has to be checked before reading content.
-        if response.stop_reason == "refusal":
-            category = getattr(getattr(response, "stop_details", None), "category", None)
-            log.warning("Claude declined the request (category=%s)", category)
+        if completion.refused:
             return BrainResult(
                 speech="I can't help with that one.",
                 language=language, latency=latency, refused=True,
             )
 
-        actions: list[Action] = []
-        speech_parts: list[str] = []
-        for block in response.content:
-            if block.type == "text":
-                speech_parts.append(block.text)
-            elif block.type == "tool_use":
-                actions.append(Action(skill=block.name, args=dict(block.input or {})))
-
-        speech = " ".join(p.strip() for p in speech_parts if p.strip()).strip()
+        actions = [Action(skill=call.skill, args=call.args) for call in completion.tool_calls]
+        speech = completion.text
 
         # Only conversational turns are worth remembering. Tool-use turns would
         # need their tool_result blocks echoed back to stay valid, and the
-        # assistant speaks the skill's own reply rather than Claude's.
+        # assistant speaks the skill's own reply rather than the model's.
         if not actions and speech:
             self._remember(user_turn, speech)
 
-        result = BrainResult(actions=actions, speech=speech, language=language,
-                             latency=latency)
-        log.info("Brain %.2fs -> %d action(s)%s", latency, len(actions),
-                 f", speech: {speech[:60]!r}" if speech else "")
-        return result
+        log.info("Brain %.2fs via %s -> %d action(s)%s", latency, provider.id,
+                 len(actions), f", speech: {speech[:60]!r}" if speech else "")
+        return BrainResult(actions=actions, speech=speech, language=language,
+                           latency=latency)
 
     def ask(self, question: str, language: str = "en") -> str:
         """Plain question answering, with no tools offered."""
         if not self.available:
             return ""
 
-        client = self._ensure_client()
+        provider = llm.selection.provider
         asked = self._language_note(language) + question
         try:
-            response = client.messages.create(
-                model=self.cfg.model,
-                max_tokens=self.cfg.max_tokens,
-                system=self._system_blocks(),
+            completion = provider.complete(
+                system=self._system_prompt(),
                 messages=[*self._history, {"role": "user", "content": asked}],
-                thinking={"type": "adaptive"},
-                output_config={"effort": self.cfg.effort},
+                tools=[],
+                api_key=llm.selection.api_key,
+                model=llm.selection.active_model,
+                max_tokens=self.cfg.max_tokens,
+                effort=self.cfg.effort,
             )
-        except Exception as exc:  # noqa: BLE001
-            log.error("Claude request failed: %s", exc)
+        except llm.LlmError as exc:
+            log.error("%s request failed: %s", provider.id, exc)
+            return ""
+        except Exception:  # noqa: BLE001
+            log.exception("%s request failed unexpectedly", provider.id)
             return ""
 
-        if response.stop_reason == "refusal":
+        if completion.refused:
             return "I can't help with that one."
-
-        answer = " ".join(b.text for b in response.content if b.type == "text").strip()
-        if answer:
-            self._remember(asked, answer)
-        return answer
+        if completion.text:
+            self._remember(asked, completion.text)
+        return completion.text
 
     # -- conversation memory ------------------------------------------------
 

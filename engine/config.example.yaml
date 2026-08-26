@@ -14,8 +14,19 @@ audio:
 wake_word:
   enabled: true
   model: hey_jarvis        # openWakeWord pretrained: hey_jarvis, alexa, hey_mycroft
-  threshold: 0.5           # lower = more sensitive; raise toward 0.7 if it self-triggers
+  # Measured across 20 synthesised "hey jarvis" clips in four gain/noise
+  # conditions: 0.50 missed 22% of them, 0.30 misses 9%, and every miss came
+  # from an accented voice (the en-US and en-GB clips never fell below 0.98).
+  # Nothing but the bare word "jarvis" scores above 0.30 by accident, so the
+  # cost of being this sensitive is that "jarvis" alone may wake it.
+  # Run `python -m jarvis --tune-wake-word` to measure your own voice.
+  threshold: 0.3
   cooldown_sec: 2.0        # ignore re-triggers for this long after a detection
+  # What you hear when the wake word fires, so you know you were heard rather
+  # than saying it again. voice = a short spoken "Yes?" / "जी?" in the language
+  # of the last turn; chime = a 140 ms rising blip, instant and never overlaps
+  # your next words; none = silence.
+  acknowledge: voice       # voice | chime | none
 
 vad:
   backend: silero          # silero | energy
@@ -58,16 +69,23 @@ tts:
 
 brain:
   enabled: true
-  model: claude-opus-5
+  # Which AI provider and model to start with. The settings screen in the app
+  # overrides both — these are only the defaults for a fresh install or a bare
+  # `python -m jarvis`. Leave `model` empty for that provider's own default,
+  # so switching provider doesn't mean editing two lines.
+  #   anthropic | openai | gemini | groq | deepseek | mistral
+  provider: anthropic
+  model: ""
   # Effort trades latency for depth. "low" keeps spoken replies snappy;
   # thinking stays ON deliberately — with it disabled this model can emit a
   # tool call as plain text, which would silently never execute.
   effort: low
   # Headroom for thinking + the reply, since both count against this budget.
   max_tokens: 2048
-  # Rule-matching confidence below which we escalate to the LLM.
-  # Higher = more traffic to Claude (smarter, slower, costs money).
-  rules_threshold: 78
+  # Fuzzy-match confidence below which we escalate to the model. Higher = more
+  # traffic to the model (smarter, slower, costs money); lower = more commands
+  # recovered offline. Garbled-but-recoverable Hinglish measured 70-77 here.
+  rules_threshold: 70
   history_turns: 6         # conversation turns kept for context
 
 permissions:
@@ -87,6 +105,29 @@ security:
 server:
   host: 127.0.0.1          # loopback only — the API can shut the machine down
   port: 8756               # WebSocket + HTTP for the Electron HUD
+
+messaging:
+  # Which app "say hi to sana" uses when no app is named.
+  # whatsapp | sms | telegram | signal | slack
+  default_app: whatsapp
+
+  # Whether to press send, or leave the draft open with the cursor in it.
+  #
+  # On by default: "send hi to sana" asks for a message to be sent, and stopping
+  # one keystroke short is a strange place to stop. Two things make that safe --
+  # the command is read back and confirmed first, *with the contact name it
+  # resolved to*, so a wrong match is caught before anything is typed; and the
+  # keypress only happens once the messaging app is confirmed to hold focus, so
+  # a slow window leaves the draft alone instead of firing Enter into whatever
+  # was in front.
+  #
+  # Set false to review every message yourself before it goes.
+  auto_send: true
+
+  # How long to wait for the app window to come forward before giving up on
+  # pressing send. Generous, because WhatsApp Desktop cold-starting is slow and
+  # the cost of impatience is only an unsent draft, which the reply then says.
+  focus_timeout_sec: 6.0
 
 assistant:
   name: Jarvis
