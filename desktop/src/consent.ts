@@ -41,7 +41,8 @@ export type CapabilityId =
   | "device_status"
   | "shell"
   | "network"
-  | "messaging";
+  | "messaging"
+  | "administrator";
 
 export interface CapabilitySpec {
   id: CapabilityId;
@@ -206,6 +207,22 @@ export const CAPABILITIES: CapabilitySpec[] = [
       "है, और शटडाउन 15 सेकंड रुकता है ताकि आप रोक सकें।",
     examples: "“laptop sula do”, “lock the screen”, “shutdown”.",
     granted: true,
+  },
+  {
+    id: "administrator",
+    title: "Administrator actions",
+    titleHi: "एडमिनिस्ट्रेटर एक्शन",
+    what:
+      "Switch Wi-Fi and Bluetooth on or off. Windows refuses these to an " +
+      "ordinary program, so Jarvis has to ask for Administrator rights — and " +
+      "Windows still shows its own prompt every single time, naming what is " +
+      "about to run. Jarvis never holds those rights while it is listening.",
+    whatHi:
+      "Wi-Fi और Bluetooth on/off करना। Windows ये काम आम प्रोग्राम को नहीं " +
+      "करने देता, इसलिए Jarvis को एडमिन अनुमति माँगनी पड़ती है — और हर बार " +
+      "Windows खुद भी पूछेगा। सुनते समय Jarvis के पास ये अधिकार कभी नहीं रहते।",
+    examples: "“turn off wifi”, “bluetooth chalu karo”.",
+    granted: false,
   },
   {
     id: "messaging",

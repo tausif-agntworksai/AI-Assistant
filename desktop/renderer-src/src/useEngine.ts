@@ -99,12 +99,32 @@ export function useEngine() {
   useEffect(() => {
     if (!info) return;
     let disposed = false;
+    let statusTimer: ReturnType<typeof setTimeout> | null = null;
+
+    /**
+     * Re-read /status shortly after a state change, coalescing the burst.
+     *
+     * There is a race at startup: the socket opens, the session unlocks and
+     * the microphone opens inside the same second. The status read on connect
+     * can therefore catch the microphone still shut and leave "Microphone
+     * closed — audio disabled" on screen while the engine is plainly
+     * listening — alarming, and wrong. Re-reading on the next state change
+     * corrects it.
+     */
+    const scheduleStatusRefresh = () => {
+      if (statusTimer) return;
+      statusTimer = setTimeout(() => {
+        statusTimer = null;
+        if (!disposed) void refreshStatus(info);
+      }, 800);
+    };
 
     const handle = (event: Record<string, unknown>) => {
       switch (event.type) {
         case "state":
           setState(event.state as EngineState);
           setFollowUp(Boolean(event.follow_up));
+          scheduleStatusRefresh();
           break;
 
         case "level": {
@@ -211,6 +231,7 @@ export function useEngine() {
     connect();
     return () => {
       disposed = true;
+      if (statusTimer) clearTimeout(statusTimer);
       window.clearTimeout(retryTimer.current);
       window.clearTimeout(decayTimer.current);
       socket.current?.close();

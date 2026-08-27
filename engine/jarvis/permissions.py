@@ -72,6 +72,13 @@ class Capability(str, enum.Enum):
     DEVICE_STATUS = "device_status"    # battery, CPU, disk, network readings
     SHELL = "shell"                    # runs PowerShell / command-line tools
     NETWORK = "network"                # Claude, weather, news, neural voices
+    #: Actions Windows refuses to a normal program: switching the Wi-Fi or
+    #: Bluetooth radio. Kept separate from SETTINGS on purpose — granting
+    #: "change brightness" should not also grant "run things as Administrator".
+    #: Even with it granted, every elevated action raises its own UAC prompt;
+    #: this consent decides whether the assistant may *ask*, not whether
+    #: Windows stops asking.
+    ADMIN = "administrator"
     MESSAGING = "messaging"            # WhatsApp and email drafts
 
     @property

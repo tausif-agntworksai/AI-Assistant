@@ -37,12 +37,19 @@ RATE = 16000
 # next, and the frames it occupies are dropped rather than transcribed — so
 # every millisecond of cue is a millisecond of your command we cannot hear.
 #
-# Soft sounds rather than crisp words. "Mm?" and "हम्म?" read as *listening*,
-# where "Yes?" reads as an answer to a question nobody asked — the difference
-# between a person looking up and a machine reporting for duty.
+# Real words only. The soft-sound versions ("Mm?", "Hm?", "हम्म?") read better
+# on paper — a person looking up rather than a machine reporting for duty —
+# but they did not survive contact with the synthesiser: reported as "not
+# sounding very clearly", and they aren't. Neural voices are trained on
+# written language, so a non-lexical sound has no pronunciation they can
+# render reliably; what comes out is a mumble that could be anything.
+#
+# Still one or two syllables, because the frames a cue occupies are dropped
+# rather than transcribed — every millisecond of cue is a millisecond of the
+# command we cannot hear.
 CUES: dict[str, tuple[str, ...]] = {
-    "en": ("Mm?", "Hm?", "Yes?"),
-    "hi": ("हम्म?", "जी?", "हाँ?"),
+    "en": ("Yes?", "Yeah?", "I'm here."),
+    "hi": ("जी?", "हाँ?", "बोलिए?"),
 }
 
 # Just under conversational pace. This was +40% — chosen to keep the cue short,
@@ -65,7 +72,27 @@ CUE_PEAK = 0.42
 # Part of the cache filename, so changing how the cue is rendered re-renders
 # rather than silently reusing clips recorded the old way. Bumped when the
 # shaping below changes, not just when the rate does.
-_RATE_TAG = "soft2-" + CUE_RATE.strip("+-%")
+#
+# Derived, not hand-maintained. The cache filename is keyed by index, so
+# changing the phrases above while reusing the tag would silently keep
+# replaying the old recordings — and the fix would appear not to work. This
+# used to be a literal that you had to remember to bump; deriving it from the
+# values that decide how a cue sounds removes the chance of forgetting.
+#
+# `_SHAPING_VERSION` covers what isn't captured below: the attack/release
+# envelope in `_soften`, which is defined further down the file.
+_SHAPING_VERSION = 1
+
+
+def _cue_signature() -> str:
+    import hashlib
+
+    material = repr((sorted(CUES.items()), CUE_RATE, CUE_VOLUME, CUE_PEAK,
+                     _SHAPING_VERSION))
+    return hashlib.sha1(material.encode("utf-8")).hexdigest()[:10]
+
+
+_RATE_TAG = _cue_signature()
 
 
 def chime(rate: int = RATE) -> np.ndarray:

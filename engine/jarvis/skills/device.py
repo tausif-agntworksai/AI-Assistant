@@ -6,7 +6,7 @@ import logging
 import time
 
 from .. import winutil
-from ..permissions import Risk
+from ..permissions import Capability, Risk, consent
 from .registry import fail, ok, skill
 
 log = logging.getLogger(__name__)
@@ -133,7 +133,8 @@ def get_date() -> object:
     confirm_hi="Wi-Fi {state} kar doon?",
 )
 def toggle_wifi(state: str = "off") -> object:
-    enable = (state or "").strip().lower() in ("on", "enable", "chalu", "start", "true")
+    enable = _wants_on(state)
+    state = "on" if enable else "off"
     action = "enable" if enable else "disable"
 
     proc = winutil.run(["netsh", "interface", "set", "interface",
@@ -141,27 +142,99 @@ def toggle_wifi(state: str = "off") -> object:
     if proc.returncode == 0:
         return ok(f"Wi-Fi turned {state}.", f"Wi-Fi {state} kar diya.")
 
-    # netsh needs elevation for this; say so instead of failing opaquely.
+    # Windows refuses this to an unelevated process. With the administrator
+    # capability granted we may ask for rights; Windows still shows its own
+    # prompt, so the user gets a second chance to refuse.
+    granted, why = _elevate(
+        "netsh.exe", f'interface set interface name="Wi-Fi" admin={action}d'
+    )
+    if granted:
+        return ok(f"Wi-Fi turned {state}.", f"Wi-Fi {state} kar diya.",
+                  detail="via administrator elevation")
+
     winutil.shell_open("ms-settings:network-wifi")
     return fail(
-        "I need administrator rights to switch Wi-Fi, so I opened the settings instead.",
-        "Wi-Fi badalne ke liye admin rights chahiye, isliye settings khol di.",
+        f"I couldn't switch Wi-Fi — {why}. I've opened the settings instead.",
+        f"Wi-Fi nahi badal paya — {why}. Settings khol di hai.",
         detail=(proc.stderr or proc.stdout).strip()[:200],
     )
 
 
+# The Bluetooth radio, as Windows names it in Device Manager. Matching on the
+# class rather than a fixed name because the adapter's name differs per vendor.
+_BT_RADIO_QUERY = (
+    "Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | "
+    "Where-Object { $_.FriendlyName -notmatch 'Enumerator' }"
+)
+
+
 @skill(
     name="toggle_bluetooth",
-    description="Open Bluetooth settings to turn Bluetooth on or off",
-    risk=Risk.SAFE,
+    description="Turn Bluetooth on or off",
+    risk=Risk.CONFIRM,
     category="device",
-    examples=["turn on bluetooth", "bluetooth band karo", "bluetooth chalu karo"],
+    params={"state": "on or off"},
+    examples=["turn on bluetooth", "bluetooth band karo", "bluetooth chalu karo",
+              "turn off bluetooth"],
+    confirm_en="Turn Bluetooth {state}?",
+    confirm_hi="Bluetooth {state} kar doon?",
 )
-def toggle_bluetooth() -> object:
-    # The supported way to flip the radio is the WinRT Radio API, which needs a
-    # package we don't ship. Settings is one tap and always works.
+def toggle_bluetooth(state: str = "off") -> object:
+    enable = _wants_on(state)
+    state = "on" if enable else "off"
+    verb = "Enable" if enable else "Disable"
+
+    # There is no unelevated way to flip the radio without the WinRT Radio
+    # API, which needs a package we don't ship — so this one goes straight to
+    # elevation rather than pretending to try first.
+    granted, why = _elevate(
+        "powershell.exe",
+        "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+        f'"{_BT_RADIO_QUERY} | {verb}-PnpDevice -Confirm:$false"',
+    )
+    if granted:
+        return ok(f"Bluetooth turned {state}.", f"Bluetooth {state} kar diya.",
+                  detail="via administrator elevation")
+
     winutil.shell_open("ms-settings:bluetooth")
-    return ok("Opened Bluetooth settings.", "Bluetooth settings khol di.")
+    return fail(
+        f"I couldn't switch Bluetooth — {why}. I've opened the settings instead.",
+        f"Bluetooth nahi badal paya — {why}. Settings khol di hai.",
+    )
+
+
+def _wants_on(state: str) -> bool:
+    return (state or "").strip().lower() in (
+        "on", "enable", "enabled", "start", "true", "yes",
+        "chalu", "chaalu", "on karo", "chalu karo",
+    )
+
+
+def _elevate(program: str, arguments: str) -> tuple[bool, str]:
+    """Run something as Administrator, if the user has allowed that.
+
+    Two gates, and both matter. Ours decides whether the assistant may even
+    ask — a misheard command should not be able to raise a UAC prompt on a
+    machine where the user never wanted elevated actions at all. Windows' own
+    prompt then decides whether it happens.
+    """
+    if winutil.is_elevated():
+        proc = winutil.run(_split_command(program, arguments))
+        if proc.returncode == 0:
+            return True, ""
+        return False, "the command failed"
+
+    if not consent.allows(Capability.ADMIN):
+        return False, (
+            "administrator access is switched off in Settings → Permissions"
+        )
+    return winutil.run_elevated(program, arguments)
+
+
+def _split_command(program: str, arguments: str) -> list[str]:
+    import shlex
+
+    return [program, *shlex.split(arguments, posix=False)]
 
 
 @skill(

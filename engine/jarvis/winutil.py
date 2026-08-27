@@ -104,6 +104,89 @@ def powershell_json(script: str, timeout: float = 20.0) -> Any:
     return data
 
 
+def is_elevated() -> bool:
+    """Whether this process is already running as Administrator."""
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def run_elevated(program: str, arguments: str, timeout: float = 30.0) -> tuple[bool, str]:
+    """Run one command as Administrator. Returns (succeeded, explanation).
+
+    Deliberately per-action rather than running the whole assistant elevated.
+    An always-on process that listens to the room and can be steered by a
+    language model is the last thing that should hold Administrator rights all
+    day — a single misheard command would then carry them. This way Windows
+    shows its own consent dialog for each action, naming the program, and the
+    user can refuse it there even after granting the capability here.
+
+    ShellExecute rather than subprocess: `runas` is what raises the UAC prompt,
+    and CreateProcess cannot elevate.
+    """
+    if os.name != "nt":
+        return False, "elevation is Windows-only"
+
+    import ctypes
+    from ctypes import wintypes
+
+    class _ShellExecuteInfo(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", ctypes.c_ulong),
+            ("hwnd", wintypes.HWND),
+            ("lpVerb", wintypes.LPCWSTR),
+            ("lpFile", wintypes.LPCWSTR),
+            ("lpParameters", wintypes.LPCWSTR),
+            ("lpDirectory", wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", wintypes.HINSTANCE),
+            ("lpIDList", ctypes.c_void_p),
+            ("lpClass", wintypes.LPCWSTR),
+            ("hkeyClass", wintypes.HKEY),
+            ("dwHotKey", wintypes.DWORD),
+            ("hIcon", wintypes.HANDLE),
+            ("hProcess", wintypes.HANDLE),
+        ]
+
+    SEE_MASK_NOCLOSEPROCESS = 0x00000040
+    SEE_MASK_NO_CONSOLE = 0x00008000
+    SW_HIDE = 0
+    ERROR_CANCELLED = 1223
+
+    info = _ShellExecuteInfo()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NO_CONSOLE
+    info.lpVerb = "runas"
+    info.lpFile = program
+    info.lpParameters = arguments
+    info.nShow = SW_HIDE
+
+    if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(info)):
+        code = ctypes.GetLastError()
+        if code == ERROR_CANCELLED:
+            return False, "cancelled at the Windows prompt"
+        return False, f"could not elevate (error {code})"
+
+    if not info.hProcess:
+        return False, "elevated process did not start"
+
+    try:
+        # Wait for it, so the caller can report what actually happened rather
+        # than assuming success the moment the prompt was accepted.
+        ctypes.windll.kernel32.WaitForSingleObject(info.hProcess, int(timeout * 1000))
+        status = wintypes.DWORD()
+        ctypes.windll.kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(status))
+        if status.value == 0:
+            return True, ""
+        return False, f"the command failed (exit {status.value})"
+    finally:
+        ctypes.windll.kernel32.CloseHandle(info.hProcess)
+
+
 def spawn(args: list[str], detached: bool = True) -> bool:
     """Launch a process without waiting for it. True if it started."""
     try:

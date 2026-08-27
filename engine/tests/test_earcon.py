@@ -240,7 +240,42 @@ def test_the_cue_is_quieter_than_a_reply():
     assert earcon.CUE_VOLUME.startswith("-")
 
 
-def test_the_cache_key_changes_when_the_shaping_does():
+def test_the_cache_key_changes_when_the_shaping_does(monkeypatch):
     """Otherwise a machine that has run the old version keeps playing the old
-    cue forever, and the fix appears not to work."""
-    assert "soft" in earcon._RATE_TAG
+    cue forever, and the fix appears not to work.
+
+    Asserted as a property rather than against a literal tag: the literal
+    version of this test failed the moment the cue wording legitimately
+    changed, which is the opposite of what it is for.
+    """
+    baseline = earcon._cue_signature()
+
+    monkeypatch.setattr(earcon, "CUES", {"en": ("Something else?",), "hi": ("कुछ और?",)})
+    assert earcon._cue_signature() != baseline, "new wording must re-render"
+
+    monkeypatch.setattr(earcon, "CUE_RATE", "-25%")
+    assert earcon._cue_signature() != baseline, "new rate must re-render"
+
+
+def test_the_cache_key_is_stable_across_calls():
+    """A key that moved on its own would re-render the cues every launch."""
+    assert earcon._cue_signature() == earcon._cue_signature()
+    assert earcon._RATE_TAG == earcon._cue_signature()
+
+
+# Sounds a neural voice has no reliable pronunciation for. It renders them as
+# an unintelligible mumble, which is what "not sounding very clearly" was.
+# A letter count can't tell these apart from real short words — "Mm" has two
+# letters and "जी" has one plus a combining vowel sign — so this is a list.
+NON_LEXICAL = {"mm", "mmm", "hm", "hmm", "mm-hmm", "mhm", "uh-huh", "हम्म", "हूँ"}
+
+
+def test_cues_are_real_words():
+    """Every cue must be something the synthesiser can actually pronounce."""
+    for language, phrases in earcon.CUES.items():
+        for phrase in phrases:
+            assert any(c.isalpha() for c in phrase), f"{language}: {phrase!r}"
+            bare = phrase.strip().rstrip("?.!").lower()
+            assert bare not in NON_LEXICAL, (
+                f"{language}: {phrase!r} is a hum, not a word — it will mumble"
+            )
