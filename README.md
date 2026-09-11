@@ -9,7 +9,7 @@ loud in whichever language you used.
   you    “chrome kholo”                  →  Chrome opens, "Chrome khol raha hoon."
   you    “kitna battery bacha hai”       →  "Battery 65 percent hai aur charge ho rahi hai."
   you    “volume pachaas kar do”         →  volume to 50%
-  you    “laptop sula do”                →  "Laptop ko sula doon?"  →  “haan”  →  sleeps
+  you    “laptop sula do”                →  sleeps
   you    “paanch minute ka timer laga do”→  announces out loud when it fires
 ```
 
@@ -62,14 +62,27 @@ For six seconds after it finishes speaking, Jarvis keeps listening without the
 wake word, so a correction (`“nahi, chrome”`) or a second command lands
 straight away.
 
-**The wake word answers back.** A short `“Yes?”` — or `“हाँ?”` if the last turn
-was Hindi — so you know you were heard rather than saying it twice. Latency is
-the whole constraint here: a cue that arrives 400 ms late lands on top of your
-first word, so nothing is synthesised at wake time. The spoken cues are
-rendered once in the background and cached; until they are ready, and whenever
-the network is not, a 140 ms rising chime generated with numpy covers for them.
-Set `wake_word.acknowledge` to `chime` if you would rather have the shorter cue
-(it overlaps less of what you say next), or `none` for silence.
+Nobody says the wake word in that window, so what arrives is as likely to be
+the room as it is to be you. Anything that doesn't match a skill offline has to
+come back clearly heard before it reaches the model, and is otherwise discarded
+without a word — answering a conversation you were not having with it is most
+of what "it wakes up on its own" actually is. Three follow-ups back to back end
+the chain, so one detection cannot hold the microphone open indefinitely.
+
+**The wake word answers back** with a 140 ms rising chime, so you know you were
+heard rather than saying it twice. Latency is the whole constraint: the listen
+loop drops every microphone frame while the cue plays, so the cue is dead time
+and a spoken `“Yes?”` costs about a second of it on every single turn. Set
+`wake_word.acknowledge` to `voice` to be answered in words instead — the spoken
+cues are rendered once in the background and cached, and fall back to the chime
+until they are ready — or `none` for silence.
+
+**And it has to hear the word twice.** openWakeWord scores each 80 ms frame on
+its own, so a cough or a consonant off the television could clear the threshold
+once and count as a detection. The wake word actually spoken holds the score up
+across consecutive frames, so `wake_word.confirm_frames` of the last
+`confirm_window` must clear it — 2 of 3 by default, which costs one frame of
+latency and removes the whole class of one-frame flukes.
 
 ### Understanding two languages at once
 
@@ -424,14 +437,75 @@ Activity tab).
 
 | Tier | Behaviour | Examples |
 |---|---|---|
-| `SAFE` | runs immediately | open an app, volume, media, any query |
-| `CONFIRM` | asks out loud, needs a yes | sleep, lock, close an app or window, typing |
+| `SAFE` | runs immediately | open an app, volume, media, sleep, lock, any query |
+| `CONFIRM` | asks out loud, needs a yes | close an app or window, typing, deleting a file |
 | `CRITICAL` | always asks | shutdown, restart, sign out, empty the bin, send a message |
+
+Sleep and lock sit in `SAFE` on purpose. Both are completely reversible — a
+keypress or a password puts the machine back exactly where it was — while
+confirming them costs a spoken prompt, a listening window and a second
+recognition pass, about four seconds, on two of the commands people give most
+often. The tier is a preference rather than a law, so
+`permissions.risk_overrides` can put either back behind a prompt, or take one
+away from `close_app`:
+
+```yaml
+permissions:
+  risk_overrides:
+    sleep_pc: confirm      # ask me again before sleeping
+    close_app: safe        # stop asking before closing a window
+```
 
 Confirmation is deliberately strict: anything that isn't a clear yes counts as
 a no, and with nothing able to ask, gated actions are refused rather than
 allowed. Shutdown and restart also run on a 15-second delay — say **“cancel
 shutdown”** to stop one.
+
+### Contacts, and the names you actually say
+
+The matching was never the weak part — the book was. Contacts could only arrive
+one at a time, by voice, so on a fresh install every "text Sana" failed against
+an empty list. Import one instead:
+
+```
+python -m jarvis --import-windows-contacts       # ~/Contacts, no export, no sign-in
+python -m jarvis --import-contacts contacts.csv  # Google Contacts, Outlook, WhatsApp
+python -m jarvis --import-contacts contacts.vcf  # iPhone, Android
+python -m jarvis --list-contacts
+```
+
+Imports replace rather than accumulate, because an address book is a snapshot
+of the truth and a contact deleted on the phone should not survive here.
+Numbers you saved by voice live in a different file and win every collision —
+someone who spelled a number out loud meant that number.
+
+You never have to give the whole name. **"Message Rohit"** finds Rohit Sharma.
+**"Email Sana"** finds the Sana who has an email address, because someone
+reachable on WhatsApp and not by email is not a candidate for Gmail. And when
+two people genuinely match, it asks once and then remembers:
+
+```
+you     “message Sana”        →  “Did you mean Sana Ahmed or Sana Khan?”
+you     “message Sana Ahmed”  →  sends
+you     “message Sana”        →  Sana Ahmed, no question
+```
+
+### Which app a message goes to
+
+WhatsApp, SMS, Telegram, Signal, Slack, Gmail and Google Chat sit behind one
+`App` record that says how each addresses people — WhatsApp by phone number,
+Gmail by email address — so "who" and "which platform" stay one lookup instead
+of a resolver per service. Naming the platform anywhere in the sentence works:
+
+```
+“text Sana on WhatsApp saying I'll be there in 10 minutes”
+“email Sana saying I'll send the report tomorrow”
+“send a message to Sana on Google Chat saying I'm joining in 5 minutes”
+```
+
+Google Chat has no public URL that opens a conversation with a named person
+from outside it, so it opens Chat with the message staged and you pick the
+conversation — which is the most that can be done honestly.
 
 Messaging is read back before anything opens: **"say hi to sana"** is confirmed
 as *"Send “Hi” to Sana?"*, with the contact name it resolved to, so a

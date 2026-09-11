@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 from . import __version__, paths
 from .logging_setup import setup_logging
@@ -65,6 +66,16 @@ def build_parser() -> argparse.ArgumentParser:
                       type=str,
                       help="measure the wake word on your voice and recommend a "
                            "threshold (say it TIMES times, default 5)")
+    book = p.add_argument_group("contacts")
+    book.add_argument("--import-contacts", metavar="FILE",
+                      help="import a .csv or .vcf address book export "
+                           "(Google Contacts, Outlook, WhatsApp, iPhone)")
+    book.add_argument("--import-windows-contacts", action="store_true",
+                      help="import the Windows address book (~/Contacts) — "
+                           "no export and no sign-in needed")
+    book.add_argument("--list-contacts", action="store_true",
+                      help="show what the assistant can address you to")
+
     diag.add_argument("--apply", action="store_true",
                       help="with --tune-wake-word, write the recommendation to "
                            "config.yaml instead of only printing it")
@@ -537,6 +548,67 @@ def cmd_run(no_audio: bool, no_server: bool) -> int:
     return 0
 
 
+# --- contacts ---------------------------------------------------------------
+
+
+def cmd_import_contacts(path: str) -> int:
+    """Import an address book export. The one step that makes messaging work."""
+    from . import contacts
+
+    source = Path(path)
+    if not source.exists():
+        print(f"  No such file: {source}")
+        return 1
+    try:
+        count = contacts.import_file(source)
+    except OSError as exc:
+        print(f"  Could not read {source.name}: {exc}")
+        return 1
+
+    if not count:
+        print(f"  Read {source.name}, but found no contacts with a number or "
+              "an email in it.")
+        return 1
+    print(f"  Imported {count} contacts from {source.name}.")
+    return 0
+
+
+def cmd_import_windows_contacts() -> int:
+    from . import contacts
+
+    folder = Path.home() / "Contacts"
+    count = contacts.import_windows_people(folder)
+    if not count:
+        print(f"  Nothing to import from {folder}.")
+        print("  That folder is empty on most machines unless you use the "
+              "People or Mail app. Export from your phone or Google Contacts "
+              "and use --import-contacts instead.")
+        return 1
+    print(f"  Imported {count} contacts from {folder}.")
+    return 0
+
+
+def cmd_list_contacts() -> int:
+    from . import contacts
+
+    rows = contacts.entries()
+    if not rows:
+        print("  No contacts yet. Import some with --import-contacts FILE, or "
+              "say \"save Sana's number as ...\".")
+        return 1
+    for contact in rows:
+        reach = contact.phone or contact.email
+        print(f"  {contact.name:<28} {reach:<20} ({contact.source})")
+    print(f"\n  {len(rows)} contacts.")
+
+    remembered = contacts.store.load(contacts.ALIASES, {})
+    if remembered:
+        print("\n  Remembered:")
+        for spoken, name in sorted(remembered.items()):
+            print(f"    {spoken!r} -> {name}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     setup_logging(logging.DEBUG if args.verbose else logging.INFO, quiet=args.quiet)
@@ -558,6 +630,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_test_mic(float(args.test_mic))
     if args.tune_wake_word:
         return cmd_tune_wake_word(int(args.tune_wake_word), args.apply)
+    if args.import_contacts:
+        return cmd_import_contacts(args.import_contacts)
+    if args.import_windows_contacts:
+        return cmd_import_windows_contacts()
+    if args.list_contacts:
+        return cmd_list_contacts()
     if args.text:
         return cmd_text(args.text, args.dry_run)
 

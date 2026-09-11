@@ -101,7 +101,7 @@ def send_message(to: str, message: str = "", app: str = "") -> object:
                     f"{target} ko kya bolna hai?")
 
     chosen = messaging.resolve_app(app, settings.messaging.default_app)
-    who = messaging.resolve_recipient(target)
+    who = messaging.resolve_recipient(target, chosen.address_kind)
 
     # A tie between two contacts is the one case worth stopping for. Guessing
     # here sends a private message to the wrong person, which no confirmation
@@ -118,8 +118,13 @@ def send_message(to: str, message: str = "", app: str = "") -> object:
         link = messaging.build_link(chosen, "", body)
         if link:
             winutil.shell_open(link)
+        # Gmail addresses people by email, WhatsApp by number, and telling
+        # someone to save a "number" for Gmail sends them looking for the
+        # wrong thing.
+        missing = ("an email address" if chosen.address_kind == "email"
+                   else "a number")
         return fail(
-            f"I don't have a number saved for {target}, so I've opened "
+            f"I don't have {missing} saved for {target}, so I've opened "
             f"{chosen.label} for you. Say \u201csave {target}\u2019s number as\u201d "
             "and the number to fix that.",
             f"{target} ka number save nahi hai, isliye {chosen.label} khol diya "
@@ -128,7 +133,7 @@ def send_message(to: str, message: str = "", app: str = "") -> object:
             detail="no contact match",
         )
 
-    link = messaging.build_link(chosen, who.phone, body)
+    link = messaging.build_link(chosen, who.address, body)
     if not link:
         return fail(
             f"I can't start a {chosen.label} chat from outside the app.",

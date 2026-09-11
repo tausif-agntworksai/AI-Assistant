@@ -53,7 +53,7 @@ def open_app(app: str) -> object:
         )
 
     candidates = app_index.ambiguous(query)
-    if len(candidates) > 1 and candidates[0].name.lower() != query.lower():
+    if len(candidates) > 1:
         names = ", ".join(c.name for c in candidates[:3])
         return fail(
             f"Did you mean {names}?",

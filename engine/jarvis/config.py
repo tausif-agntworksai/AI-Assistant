@@ -61,7 +61,22 @@ class WakeWordConfig(BaseModel):
     #   chime — a 140 ms rising two-note blip. Always available, never overlaps
     #           what you say next, and language-neutral.
     #   none  — silence, as it was before.
-    acknowledge: Literal["voice", "chime", "none"] = "voice"
+    #
+    # `chime` is the default because the cue is dead time: the listen loop
+    # drops every microphone frame while it plays, so whatever you say over it
+    # is lost. A spoken "I'm listening." is about a second of that on every
+    # single turn; the chime is 140 ms. Set this to `voice` if you would
+    # rather be answered in words and don't mind waiting through them.
+    acknowledge: Literal["voice", "chime", "none"] = "chime"
+    #: How many of the last `confirm_window` frames must clear the threshold
+    #: before this counts as a detection. openWakeWord scores every 80 ms
+    #: frame independently, so a single spike — a cough, a consonant off the
+    #: television — used to be enough on its own. Real speech holds the score
+    #: up across several frames, so asking for 2 of 3 costs 80 ms of latency
+    #: and removes the whole class of one-frame flukes. Set to 1 for the old
+    #: single-frame behaviour.
+    confirm_frames: int = 2
+    confirm_window: int = 3
 
 
 class VadConfig(BaseModel):
@@ -175,6 +190,11 @@ class PermissionsConfig(BaseModel):
     confirm_tier_enabled: bool = True
     allow_critical_without_confirm: bool = False
     confirm_timeout_sec: float = 12.0
+    #: Re-tier individual skills without editing their declaration:
+    #: ``{"close_app": "safe"}``. A skill declares the risk that is right in
+    #: general; this is where one machine's owner says what is right for them.
+    #: Values are Risk names — safe | confirm | critical.
+    risk_overrides: dict[str, str] = Field(default_factory=dict)
 
 
 class ServerConfig(BaseModel):

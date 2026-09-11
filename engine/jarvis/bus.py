@@ -46,6 +46,7 @@ class Event(str, Enum):
     ERROR = "error"
     LOG = "log"
     LEVEL = "level"  # live mic amplitude, for the HUD waveform
+    TIMING = "timing"  # stage-by-stage latency for one finished turn
     #: Something needed the language model and no key has been set. The HUD
     #: opens settings on this rather than making the user work out why a
     #: question went unanswered.
@@ -64,6 +65,15 @@ class EventBus:
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Called once by the server so worker threads know where to hand off."""
         self._loop = loop
+
+    def history(self, limit: int = 50) -> list[dict[str, Any]]:
+        """The most recent events, oldest first.
+
+        The same buffer `subscribe` replays to a late-connecting HUD, exposed
+        so a caller that isn't an async consumer — a test, a diagnostic — can
+        see what was published without reaching into the deque.
+        """
+        return list(self._history)[-limit:]
 
     @property
     def state(self) -> State:

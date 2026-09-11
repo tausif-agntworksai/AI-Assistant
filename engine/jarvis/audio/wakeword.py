@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 
 import numpy as np
 
@@ -46,14 +47,18 @@ class OpenWakeWord(WakeWordDetector):
     available = True
 
     def __init__(self, model: str = "hey_jarvis", threshold: float = 0.5,
-                 cooldown_sec: float = 2.0) -> None:
+                 cooldown_sec: float = 2.0, confirm_frames: int = 2,
+                 confirm_window: int = 3) -> None:
         from openwakeword.model import Model
 
         ensure_models(model)
         self.model_name = model
         self.threshold = threshold
         self.cooldown_sec = cooldown_sec
+        self.confirm_frames = max(1, int(confirm_frames))
+        self.confirm_window = max(self.confirm_frames, int(confirm_window))
         self._last_fire = 0.0
+        self._recent: deque[bool] = deque(maxlen=self.confirm_window)
 
         self._model = Model(wakeword_models=[model], inference_framework="onnx")
         # The key openWakeWord reports back is not always the string we passed
@@ -71,19 +76,36 @@ class OpenWakeWord(WakeWordDetector):
         return float(scores.get(self._key, 0.0))
 
     def triggered(self, frame: np.ndarray) -> bool:
-        """Score the frame and apply threshold + cooldown."""
+        """Score the frame, then require the score to hold across frames.
+
+        The threshold alone is a per-frame decision, and 80 ms is short enough
+        that a cough or a consonant off the television can clear it once. The
+        wake word spoken by a person holds the score up over several
+        consecutive frames, so asking for `confirm_frames` hits out of the
+        last `confirm_window` separates the two at a cost of one or two frames
+        of latency.
+        """
         score = self.detect(frame)
-        if score < self.threshold:
+        self._recent.append(score >= self.threshold)
+
+        if sum(self._recent) < self.confirm_frames:
             return False
+
         now = time.monotonic()
         if now - self._last_fire < self.cooldown_sec:
             return False
         self._last_fire = now
         self.reset()  # clear feature buffers so the next detection starts clean
-        log.info("Wake word detected (score %.2f)", score)
+        log.info(
+            "Wake word detected (score %.2f, %d/%d frames)",
+            score, sum(self._recent), len(self._recent),
+        )
         return True
 
     def reset(self) -> None:
+        # The confirmation window has to go too: leaving it full would let the
+        # tail of one detection count toward the next.
+        self._recent.clear()
         try:
             self._model.reset()
         except Exception:  # noqa: BLE001 - older versions lack reset()
@@ -106,10 +128,12 @@ def ensure_models(model: str = "hey_jarvis") -> None:
 
 
 def create_wakeword(model: str = "hey_jarvis", threshold: float = 0.5,
-                    cooldown_sec: float = 2.0) -> WakeWordDetector:
+                    cooldown_sec: float = 2.0, confirm_frames: int = 2,
+                    confirm_window: int = 3) -> WakeWordDetector:
     """Build the detector, degrading to hotkey-only rather than failing."""
     try:
-        return OpenWakeWord(model, threshold, cooldown_sec)
+        return OpenWakeWord(model, threshold, cooldown_sec,
+                            confirm_frames, confirm_window)
     except Exception as exc:  # noqa: BLE001
         log.warning(
             "Wake word unavailable (%s: %s) - use the hotkey or HUD to talk",

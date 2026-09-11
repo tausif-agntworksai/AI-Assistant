@@ -22,7 +22,11 @@ SHUTDOWN_DELAY_SEC = 15
 @skill(
     name="lock_screen",
     description="Lock the computer screen",
-    risk=Risk.CONFIRM,
+    # Instant and reversible: the machine is one password away from where it
+    # was, and nothing is lost. Asking "lock the screen?" out loud costs a
+    # spoken prompt, a listening window and a second recognition pass -- about
+    # four seconds -- to guard against an outcome you undo by typing.
+    risk=Risk.SAFE,
     category="system",
     examples=["lock the screen", "lock my pc", "computer lock karo", "screen lock kar do"],
     confirm_en="Lock the screen?",
@@ -40,7 +44,10 @@ def lock_screen() -> object:
 @skill(
     name="sleep_pc",
     description="Put the computer to sleep",
-    risk=Risk.CONFIRM,
+    # Same reasoning as lock_screen: sleep loses nothing -- Windows keeps
+    # everything in memory and a keypress brings it all back. Set
+    # `permissions.risk_overrides: {sleep_pc: confirm}` to be asked again.
+    risk=Risk.SAFE,
     category="system",
     examples=[
         "go to sleep", "sleep the laptop", "laptop sula do", "computer ko sula do",

@@ -189,6 +189,12 @@ _QUESTION_HEADS = frozenset({
     "kya", "kaun", "kab", "kahan", "kitna", "kitni", "kaise", "kaisa",
 })
 
+#: The same test, for the *body* rather than the recipient — and without the
+#: articles. A recipient called "the" is always a mis-parse, but a message
+#: beginning "the deck is ready" is the most ordinary sentence there is, and
+#: treating it as a question was quietly sending those to the model instead.
+_QUESTION_BODIES = _QUESTION_HEADS - {"a", "an", "the"}
+
 
 def _message(m: re.Match[str], text: str, raw: str) -> dict[str, Any]:
     """Build send_message arguments, taking the body from the raw utterance.
@@ -214,16 +220,47 @@ def _message(m: re.Match[str], text: str, raw: str) -> dict[str, Any]:
     # question than someone's name.
     if len(who.split()) > 4:
         raise SkipRule("recipient too long to be a name")
-    if body and body.split()[0].lower() in _QUESTION_HEADS:
+    if body and body.split()[0].lower() in _QUESTION_BODIES:
         raise SkipRule("looks like a question, not a message")
+
+    app = (groups.get("app") or "").strip()
+
+    # Every rule below puts the optional "on whatsapp" at the very end, so
+    # "text Sana on WhatsApp saying ..." — where it sits in the middle —
+    # handed back a recipient of "sana on whatsapp". Stripping it here fixes
+    # every phrasing at once instead of growing a second optional group on
+    # each of the six patterns.
+    who, trailing = _split_app(who)
+    app = app or trailing
+
+    if not who:
+        raise SkipRule("the app name was the whole recipient")
 
     args: dict[str, Any] = {"to": who}
     if body:
         args["message"] = _body_from_raw(body, raw)
-    app = (groups.get("app") or "").strip()
+    # The word that opened the sentence often names the platform: "email Sana"
+    # is Gmail, "whatsapp Sana" is WhatsApp. Only consulted when the user
+    # didn't say "on <app>" outright.
+    app = app or _TRIGGER_APPS.get((groups.get("trigger") or "").strip().lower(), "")
     if app:
         args["app"] = app
     return args
+
+
+#: Which platform an opening verb implies, when the user named none.
+_TRIGGER_APPS: dict[str, str] = {
+    "email": "gmail", "mail": "gmail", "gmail": "gmail",
+    "whatsapp": "whatsapp",
+}
+
+
+def _split_app(who: str) -> tuple[str, str]:
+    """Peel a trailing "on <app>" off a recipient. Returns (who, app)."""
+    match = _TRAILING_APP.search(who)
+    if not match:
+        return who, ""
+    return who[: match.start()].strip(), match.group("app").strip()
 
 
 #: Hindi case particles and the stray verb that a broader English rule leaves
@@ -305,7 +342,15 @@ def _messaging_apps() -> str:
     return app_names()
 
 
+#: The determiners people put in front of their own machine. "lock my laptop"
+#: was reaching the model because only "the" was allowed here.
+_MINE = r"(?:the|my|this|mera|meri|is)"
+
 _APPS = _messaging_apps()
+
+#: "... on whatsapp" clinging to the end of a recipient. Built from the same
+#: alias list as the rules, so a new messaging app is understood here for free.
+_TRAILING_APP = _rx(rf"\s+(?:on|par|pe|se)\s+(?P<app>{_APPS})$")
 
 #: Verbs that turn an app name into app control rather than a recipient.
 #: "whatsapp kholo", "whatsapp chalu karo", "whatsapp band karo" are all about
@@ -353,10 +398,10 @@ RULES: list[tuple[re.Pattern[str], str, Builder]] = [
     (_rx(rf"^(?:pc|computer|laptop|system)\s+(?:{V('restart')})$"), "restart_pc", _none),
     # "computer band kar do" is a shutdown, not closing an app called computer.
     (_rx(rf"^(?:pc|computer|laptop|system)\s+(?:{V('close')})$"), "shutdown_pc", _none),
-    (_rx(rf"^(?:{V('sleep')})(?:\s+(?:the\s+)?(?:pc|computer|laptop|system))?$"),
+    (_rx(rf"^(?:{V('sleep')})(?:\s+(?:{_MINE}\s+)?(?:pc|computer|laptop|system))?$"),
      "sleep_pc", _none),
     (_rx(rf"^(?:pc|computer|laptop|system){PARTICLES}\s+(?:{V('sleep')})$"), "sleep_pc", _none),
-    (_rx(rf"^(?:{V('lock')})(?:\s+(?:the\s+)?(?:pc|computer|laptop|screen|system))?$"),
+    (_rx(rf"^(?:{V('lock')})(?:\s+(?:{_MINE}\s+)?(?:pc|computer|laptop|screen|system))?$"),
      "lock_screen", _none),
     (_rx(rf"^(?:pc|computer|laptop|screen){PARTICLES}\s+(?:{V('lock')})$"),
      "lock_screen", _none),
@@ -521,6 +566,13 @@ RULES: list[tuple[re.Pattern[str], str, Builder]] = [
     # ("bol do ki main aa raha hoon") has to be tried before the bare form
     # ("hi bol do"), or the latter claims the utterance and the message becomes
     # the single word "ki".
+    # "send a message to sana on google chat saying ...". The generic
+    # "send <msg> to <who>" rule below reads "a message" as the body and the
+    # rest of the sentence as the name, so this has to come first.
+    (_rx(rf"^(?:send|bhejo?|write|likho)\s+(?:a\s+|an\s+)?"
+         rf"(?P<trigger>message|msg|text|email|mail)\s+(?:to\s+|ko\s+)?"
+         rf"(?P<who>.+?)\s+(?:saying|that|ki|and\s+say|about)\s+(?P<msg>.+)$"),
+     "send_message", _message),
     (_rx(rf"^(?:say|bol|bolo|send|bhejo?)\s+(?P<msg>.+?)\s+(?:to|ko)\s+"
          rf"(?P<who>.+?)(?:\s+(?:on|par|pe|se)\s+(?P<app>{_APPS}))?$"),
      "send_message", _message),
@@ -533,7 +585,8 @@ RULES: list[tuple[re.Pattern[str], str, Builder]] = [
          rf"(?:bhejo|bhej\s+do|bol\s+do|bolo|keh\s+do|kaho|likh\s+do|batao|bata\s+do)\s+"
          rf"ki\s+(?P<msg>.+)$"),
      "send_message", _message),
-    (_rx(rf"^(?:message|msg|whatsapp|text)\s+(?P<who>.+?)\s+"
+    (_rx(rf"^(?P<trigger>message|msg|whatsapp|text|email|mail|gmail)\s+"
+         rf"(?P<who>.+?)\s+"
          rf"(?:saying|that|ki|and\s+say)\s+(?P<msg>.+?)"
          rf"(?:\s+(?:on|par|pe|se)\s+(?P<app>{_APPS}))?$"),
      "send_message", _message),
@@ -549,7 +602,8 @@ RULES: list[tuple[re.Pattern[str], str, Builder]] = [
     # `_APP_VERBS` is the guard that keeps "whatsapp chalu karo" ("open
     # WhatsApp") out of here. Without it the app name was read as the verb and
     # "chalu karo" as the person to message.
-    (_rx(rf"^(?:message|msg|whatsapp|text)\s+(?!{_APP_VERBS})(?P<who>.+?)"
+    (_rx(rf"^(?P<trigger>message|msg|whatsapp|text|email|mail|gmail)\s+"
+         rf"(?!{_APP_VERBS})(?P<who>.+?)"
          rf"(?:\s+(?:on|par|pe|se)\s+(?P<app>{_APPS}))?$"),
      "send_message", _message),
 

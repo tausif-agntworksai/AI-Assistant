@@ -277,6 +277,30 @@ class PermissionGate:
         """Whether the user granted this capability at all."""
         return consent.allows(capability)
 
+    def effective_risk(self, skill_name: str, declared: Risk) -> Risk:
+        """The tier this machine's owner wants, falling back to the declared one.
+
+        A skill declares the risk that is right in general. Whether *this* user
+        wants to be asked is a different question, and one they should be able
+        to answer without editing Python — "stop asking me before you sleep the
+        laptop" is a preference, not a fork.
+
+        An unparseable override is ignored rather than guessed at: a typo in
+        config.yaml must never silently downgrade a critical action.
+        """
+        override = (getattr(self.cfg, "risk_overrides", None) or {}).get(skill_name)
+        if not override:
+            return declared
+        try:
+            return Risk(str(override).strip().lower())
+        except ValueError:
+            log.warning(
+                "permissions.risk_overrides[%r] is %r, which is not one of "
+                "safe/confirm/critical — keeping the declared %s tier",
+                skill_name, override, declared.value,
+            )
+            return declared
+
     def check(
         self,
         skill_name: str,
@@ -286,6 +310,8 @@ class PermissionGate:
         language: str = "en",
     ) -> bool:
         """Decide whether `skill_name` may run. Blocks while asking the user."""
+        risk = self.effective_risk(skill_name, risk)
+
         if risk is Risk.SAFE:
             return True
 

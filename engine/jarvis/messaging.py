@@ -65,6 +65,11 @@ class App:
     #: keystroke is sent to it.
     process: str = ""
     needs_number: bool = True
+    #: What this app addresses people by. WhatsApp and SMS want a phone
+    #: number; Gmail wants an email address. The contact book holds both, so
+    #: this decides which column a lookup reads rather than forcing a second
+    #: resolver per platform.
+    address_kind: str = "phone"
 
 
 APPS: tuple[App, ...] = (
@@ -105,6 +110,33 @@ APPS: tuple[App, ...] = (
         fallback="sgnl://",
         process="Signal.exe",
         needs_number=False,
+    ),
+    App(
+        id="gmail",
+        label="Gmail",
+        aliases=("gmail", "email", "mail", "e mail", "google mail"),
+        # Gmail's compose URL, which opens a pre-filled draft in the browser
+        # already signed in as the user. `mailto:` was the old route and went
+        # to whatever Windows had registered — usually nothing at all.
+        deep_link=("https://mail.google.com/mail/?view=cm&fs=1"
+                   "&to={phone}&su={subject}&body={text}"),
+        fallback="https://mail.google.com/mail/?view=cm&fs=1&body={text}",
+        process="",
+        address_kind="email",
+    ),
+    App(
+        id="googlechat",
+        label="Google Chat",
+        aliases=("google chat", "gchat", "g chat", "chat", "hangouts"),
+        # Chat has no documented URL that opens a conversation with a named
+        # person from outside it — the per-chat URLs are opaque internal ids.
+        # Opening Chat itself is the most that can be done honestly, so the
+        # message is staged and the user picks the conversation.
+        deep_link=None,
+        fallback="https://mail.google.com/chat/u/0/",
+        process="",
+        needs_number=False,
+        address_kind="email",
     ),
     App(
         id="slack",
@@ -157,10 +189,17 @@ class Recipient:
     name: str = ""
     #: Set when two contacts were too close to choose between.
     ambiguous: tuple[str, ...] = ()
+    #: Filled for apps that address people by email rather than by number.
+    email: str = ""
 
     @property
     def found(self) -> bool:
-        return bool(self.phone)
+        return bool(self.phone or self.email)
+
+    @property
+    def address(self) -> str:
+        """Whichever of the two this recipient was resolved for."""
+        return self.phone or self.email
 
 
 def normalise_phone(raw: str) -> str:
@@ -173,7 +212,11 @@ def normalise_phone(raw: str) -> str:
     return digits
 
 
-def resolve_recipient(target: str) -> Recipient:
+def _looks_like_email(value: str) -> bool:
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", (value or "").strip()))
+
+
+def resolve_recipient(target: str, address_kind: str = "phone") -> Recipient:
     """Turn what the user said into a number, a tie, or nothing.
 
     Three outcomes rather than two, because "I don't have a number for Sana" and
@@ -184,32 +227,57 @@ def resolve_recipient(target: str) -> Recipient:
     if not spoken:
         return Recipient()
 
-    direct = normalise_phone(spoken)
-    if direct:
-        return Recipient(phone=direct, name=spoken)
+    if address_kind == "email":
+        if _looks_like_email(spoken):
+            return Recipient(email=spoken, name=spoken)
+    else:
+        direct = normalise_phone(spoken)
+        if direct:
+            return Recipient(phone=direct, name=spoken)
 
     from rapidfuzz import fuzz
 
+    from . import contacts as book
+
+    # What this name meant the last time we had to ask. Checked before any
+    # scoring: the user already answered this question once, and asking again
+    # is the thing that made them stop using the feature.
+    preferred = book.learned(spoken)
+
+    wants_email = address_kind == "email"
     needle = spoken.lower()
     scored: list[tuple[float, str, str]] = []
-    for contact in store.load("contacts", []):
+    for contact in _contact_rows():
         name = str(contact.get("name", "")).strip()
-        phone = normalise_phone(str(contact.get("phone", "")))
-        if not name or not phone:
+        if wants_email:
+            address = str(contact.get("email", "")).strip()
+            if not _looks_like_email(address):
+                address = ""
+        else:
+            address = normalise_phone(str(contact.get("phone", "")))
+        # A contact with no address of the kind this app needs is not a
+        # candidate for it. Someone can be perfectly findable for WhatsApp and
+        # unreachable by email, and scoring them here would produce a confident
+        # match that then has nowhere to send anything.
+        if not name or not address:
             continue
+        if preferred and name.lower() == preferred.lower():
+            log.info("Contact %r resolved to %r from a remembered choice",
+                     spoken, name)
+            return _recipient(name, address, wants_email)
         # token_set_ratio so "sana" matches a contact saved as "Sana Khan",
         # which WRatio scores down for being shorter than the stored name.
         score = max(
             fuzz.token_set_ratio(needle, name.lower()),
             fuzz.ratio(needle, name.lower()),
         )
-        scored.append((score, name, phone))
+        scored.append((score, name, address))
 
     if not scored:
         return Recipient()
 
     scored.sort(key=lambda row: row[0], reverse=True)
-    best_score, best_name, best_phone = scored[0]
+    best_score, best_name, best_address = scored[0]
     if best_score < MATCH_FLOOR:
         return Recipient()
 
@@ -218,6 +286,12 @@ def resolve_recipient(target: str) -> Recipient:
         if best_score - score <= TIE_WINDOW and score >= MATCH_FLOOR
     ]
     if rivals:
+        # Hold on to what was asked and who it was between. If the next attempt
+        # names one of these, that answer is worth keeping — otherwise the user
+        # is asked "which Sana?" every single time, which is the complaint this
+        # whole path exists to avoid.
+        global _pending
+        _pending = (spoken, tuple([best_name, *rivals[:2]]))
         return Recipient(ambiguous=tuple([best_name, *rivals[:2]]))
 
     if best_score < MATCH_STRONG:
@@ -225,13 +299,66 @@ def resolve_recipient(target: str) -> Recipient:
         # without saying whose name was matched. The skill puts the resolved
         # name in its reply, so the user hears it before pressing send.
         log.info("Contact %r matched %r at %.0f", spoken, best_name, best_score)
-    return Recipient(phone=best_phone, name=best_name)
+
+    _learn_from_answer(best_name)
+    return _recipient(best_name, best_address, wants_email)
 
 
-def build_link(app: App, phone: str, message: str) -> str:
-    """The URI that opens this app with the message staged."""
+def _recipient(name: str, address: str, wants_email: bool) -> Recipient:
+    return (Recipient(email=address, name=name) if wants_email
+            else Recipient(phone=address, name=name))
+
+
+#: The last name we had to ask about, and who it was between. Process-local on
+#: purpose: it is a half-finished sentence, not a setting, and it should not
+#: survive a restart.
+_pending: tuple[str, tuple[str, ...]] | None = None
+
+
+def _learn_from_answer(resolved: str) -> None:
+    """If this answers an earlier "which one did you mean?", write it down."""
+    global _pending
+    if _pending is None:
+        return
+    spoken, candidates = _pending
+    _pending = None
+    if resolved not in candidates:
+        return  # a different request entirely; the question went unanswered
+    from . import contacts as book
+
+    book.remember(spoken, resolved)
+
+
+def _contact_rows() -> list[dict]:
+    """Every contact as a plain row.
+
+    Reads through `contacts.entries()` so an imported address book is visible
+    here, while still going through `store` for the manual ones — which is what
+    keeps this substitutable in tests.
+    """
+    from . import contacts as book
+
+    return [{"name": c.name, "phone": c.phone, "email": c.email}
+            for c in book.entries()]
+
+
+def build_link(app: App, phone: str, message: str, subject: str = "") -> str:
+    """The URI that opens this app with the message staged.
+
+    `phone` is whatever this app addresses people by — a number for WhatsApp,
+    an email address for Gmail. The parameter keeps its name because every
+    caller and every template already uses it, and giving the same slot two
+    names would be worse than one slightly wrong one.
+    """
     text = urllib.parse.quote(message.strip())
-    if phone and app.deep_link:
-        return app.deep_link.format(phone=phone, text=text)
-    template = app.fallback or ""
-    return template.format(phone=phone, text=text) if template else ""
+    fields = {
+        "phone": urllib.parse.quote(phone) if app.address_kind == "email" else phone,
+        "text": text,
+        "subject": urllib.parse.quote(subject.strip()),
+    }
+    template = app.deep_link if (phone and app.deep_link) else (app.fallback or "")
+    if not template:
+        return ""
+    # Templates only use the fields they need, so format with all of them and
+    # let the unused ones fall away.
+    return template.format(**fields)

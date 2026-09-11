@@ -63,7 +63,7 @@ def test_every_destructive_skill_is_gated():
     """A new skill that shuts down or messages someone must not default to SAFE."""
     must_be_gated = {
         "shutdown_pc", "restart_pc", "sign_out", "empty_recycle_bin",
-        "send_message", "compose_email", "sleep_pc", "lock_screen",
+        "send_message", "compose_email",
         "close_app", "close_window", "type_text", "toggle_wifi",
         "clear_reminders",
     }
@@ -71,6 +71,51 @@ def test_every_destructive_skill_is_gated():
         spec = registry.get(name)
         assert spec is not None, f"{name} is missing from the registry"
         assert spec.risk is not Risk.SAFE, f"{name} is ungated"
+
+
+def test_sleep_and_lock_are_deliberately_instant():
+    """These two are SAFE on purpose, and it should take a decision to change.
+
+    Both are fully reversible — a keypress or a password puts the machine back
+    exactly where it was — and confirming them out loud costs a spoken prompt,
+    a listening window and a second recognition pass on the single most common
+    command the assistant gets.
+    """
+    for name in ("sleep_pc", "lock_screen"):
+        assert registry.get(name).risk is Risk.SAFE
+
+
+def test_config_can_put_a_skill_back_behind_a_prompt():
+    """The tier is a preference, so it has to be settable without editing code."""
+    cfg = _Config()
+    cfg.risk_overrides = {"sleep_pc": "confirm"}
+    gate = PermissionGate(cfg)
+
+    asked = []
+    gate.set_confirmer(lambda en, hi, risk: asked.append(risk) or True)
+
+    assert gate.check("sleep_pc", Risk.SAFE, "Sleep?", "Sula doon?") is True
+    assert asked == [Risk.CONFIRM]
+
+
+def test_config_can_take_a_prompt_away():
+    """And the other direction, which is what makes sleep instant by default."""
+    cfg = _Config()
+    cfg.risk_overrides = {"close_app": "safe"}
+    gate = PermissionGate(cfg)
+    gate.set_confirmer(lambda en, hi, risk: pytest.fail("should not have asked"))
+
+    assert gate.check("close_app", Risk.CONFIRM, "Close it?", "Band karun?") is True
+
+
+def test_an_unparseable_override_is_ignored():
+    """A typo must never silently downgrade something destructive."""
+    cfg = _Config()
+    cfg.risk_overrides = {"shutdown_pc": "safe-ish"}
+    gate = PermissionGate(cfg)
+
+    # Still CRITICAL, so with no confirmer installed it is refused outright.
+    assert gate.check("shutdown_pc", Risk.CRITICAL, "?", "?") is False
 
 
 def test_every_skill_declares_a_capability_or_is_purely_local():

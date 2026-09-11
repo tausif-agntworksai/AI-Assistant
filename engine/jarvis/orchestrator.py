@@ -41,6 +41,7 @@ from .audio.vad import SegmentResult, SpeechSegmenter, create_vad
 from .audio.wakeword import create_wakeword
 from .bus import Event, State, bus
 from .config import settings
+from .metrics import TurnTimer
 from .nlu.confirm import is_affirmative
 from .nlu.rules import route
 from .permissions import Capability, Risk, consent, gate
@@ -57,6 +58,17 @@ _LEVEL_EVERY = 8
 # Past this the problem is the microphone or the room, and repeating "sorry?"
 # at someone is worse than silence.
 _MAX_REASKS = 2
+
+# How many follow-ups may run back to back before the wake word is needed
+# again. Each reply arms the next window, so without a cap one detection can
+# hold the microphone open for as long as anything nearby keeps talking.
+_MAX_FOLLOWUP_CHAIN = 3
+
+# In a follow-up window nobody has said the wake word, so the audio is as
+# likely to be the room as the user. Anything that doesn't match a skill
+# offline has to clear this decoder confidence before it is allowed to reach
+# the model — otherwise it is discarded as noise, silently.
+_FOLLOWUP_BRAIN_CONFIDENCE = 0.75
 
 
 @dataclass
@@ -101,6 +113,8 @@ class Orchestrator:
         self._awaiting_confirmation = False
         self._want_audio = False
         self._followup_until = 0.0
+        self._in_followup = False
+        self._followup_chain = 0
         self._misses = 0
         self._recent_peak = 0.0
         self._quiet_warned = False
@@ -139,6 +153,8 @@ class Orchestrator:
             create_wakeword(
                 self.cfg.wake_word.model, self.cfg.wake_word.threshold,
                 self.cfg.wake_word.cooldown_sec,
+                self.cfg.wake_word.confirm_frames,
+                self.cfg.wake_word.confirm_window,
             )
             if self.cfg.wake_word.enabled
             else None
@@ -407,6 +423,7 @@ class Orchestrator:
         )
         self.segmenter.reset(preroll=preroll.read())
         preroll.clear()
+        self._in_followup = follow_up
         bus.set_state(State.LISTENING, follow_up=follow_up)
 
     def _acknowledge(self) -> None:
@@ -428,8 +445,18 @@ class Orchestrator:
         with `followup_sec` of patience. Keeping the latch short-lived means a
         stale arm can't reopen the microphone minutes later.
         """
-        if float(self.cfg.assistant.followup_sec) > 0 and self.listening_enabled:
-            self._followup_until = time.monotonic() + 1.0
+        if float(self.cfg.assistant.followup_sec) <= 0 or not self.listening_enabled:
+            return
+        # A follow-up that produced another reply arms the next one, so a room
+        # with a television in it can keep the microphone open indefinitely
+        # without anyone ever saying the wake word. After a few links the
+        # chain is no longer a conversation, so it ends and the wake word is
+        # required again.
+        if self._followup_chain >= _MAX_FOLLOWUP_CHAIN:
+            log.debug("Follow-up chain capped — wake word required again")
+            self._followup_chain = 0
+            return
+        self._followup_until = time.monotonic() + 1.0
 
     # -- processing ---------------------------------------------------------
 
@@ -450,15 +477,19 @@ class Orchestrator:
 
     def _process_utterance(self, audio: np.ndarray, truncated: bool = False) -> None:
         bus.set_state(State.THINKING)
+        follow_up, self._in_followup = self._in_followup, False
+        timer = TurnTimer()
+        timer.note(follow_up=follow_up)
 
         if is_too_quiet(audio, self.cfg.audio.sample_rate):
             self._warn_quiet_microphone()
 
         hint = self._stt_hint()
         try:
-            transcript = self.transcriber.transcribe(
-                audio, self.cfg.audio.sample_rate, hint=hint
-            )
+            with timer.stage("stt"):
+                transcript = self.transcriber.transcribe(
+                    audio, self.cfg.audio.sample_rate, hint=hint
+                )
         except Exception as exc:  # noqa: BLE001
             log.exception("Transcription failed")
             bus.publish(Event.ERROR, message=f"transcription failed: {exc}")
@@ -474,15 +505,51 @@ class Orchestrator:
                     accuracy=round(transcript.confidence, 3), truncated=truncated)
 
         language = self._resolve_language(transcript)
-        turn = self._handle(transcript.text, language, source="voice", resolve=False)
+
+        # In a follow-up nobody said the wake word, so this audio is as likely
+        # to be the room as the user. Route it offline first and let it reach
+        # the model only if it either matched a skill or came back clearly
+        # heard; anything else is discarded without a word. Speaking "sorry,
+        # say that again?" at a conversation the user isn't having with us is
+        # exactly what "it wakes up on its own" feels like from the outside.
+        if follow_up:
+            with timer.stage("route"):
+                turn = self._handle(transcript.text, language, source="voice",
+                                    resolve=False, local_only=True)
+            if not turn.understood and transcript.confidence < _FOLLOWUP_BRAIN_CONFIDENCE:
+                log.info("Follow-up audio discarded as noise: %r (confidence %.2f)",
+                         transcript.text[:60], transcript.confidence)
+                self._followup_chain = 0
+                bus.set_state(State.IDLE)
+                return
+            if not turn.understood:
+                with timer.stage("brain"):
+                    turn = self._handle(transcript.text, language, source="voice",
+                                        resolve=False)
+        else:
+            with timer.stage("route"):
+                turn = self._handle(transcript.text, language, source="voice",
+                                    resolve=False)
 
         # Words that route to nothing are usually the wrong words. The audio is
-        # still here, so ask the bigger model before asking the user.
-        if not turn.understood:
-            turn = self._retry_with_better_hearing(audio, transcript, hint, turn)
+        # still here, so ask the bigger model before asking the user. Not worth
+        # the second pass on a follow-up: that audio has already failed the
+        # noise check above, and re-decoding costs seconds.
+        if not turn.understood and not follow_up:
+            with timer.stage("stt"):
+                turn = self._retry_with_better_hearing(audio, transcript, hint, turn)
 
         if turn.understood:
             self._misses = 0
+
+        self._followup_chain = self._followup_chain + 1 if follow_up else 0
+
+        # Logged before the reply is spoken: TTS runs on its own thread and
+        # the user is already being answered by then, so waiting for it would
+        # measure something they are not waiting for.
+        timer.note(via=turn.via, skill=turn.skill,
+                   understood=turn.understood, words=len(transcript.text.split()))
+        timer.done()
 
         if turn.reply:
             # Speak on a worker thread so the listen loop keeps consuming audio
@@ -490,7 +557,11 @@ class Orchestrator:
             # that can notice the wake word, which is what barge-in needs.
             self.speak_async(turn.reply, self.last_language, via=turn.via)
         elif not turn.understood:
-            self._not_understood(heard_something=True)
+            if follow_up:
+                self._followup_chain = 0
+                bus.set_state(State.IDLE)
+            else:
+                self._not_understood(heard_something=True)
         else:
             bus.set_state(State.IDLE)
             self._open_followup()
@@ -573,11 +644,21 @@ class Orchestrator:
 
         The one place voice, CLI and HUD input converge — which is what makes
         `--text` a faithful rehearsal of the spoken path.
+
+        Timed like a spoken turn, minus the microphone: `--text "chrome kholo"`
+        is the cheapest way to measure routing and execution on a machine,
+        with none of the variance a real utterance brings.
         """
-        return self._handle(text, language, source, dry_run).reply
+        timer = TurnTimer()
+        with timer.stage("route"):
+            turn = self._handle(text, language, source, dry_run)
+        timer.note(via=turn.via, skill=turn.skill, understood=turn.understood)
+        timer.done()
+        return turn.reply
 
     def _handle(self, text: str, language: str = "en", source: str = "text",
-                dry_run: bool = False, resolve: bool = True) -> Turn:
+                dry_run: bool = False, resolve: bool = True,
+                local_only: bool = False) -> Turn:
         """`resolve=False` means the caller already decided the language.
 
         The voice path has Whisper's own label and its confidence to work
@@ -605,6 +686,13 @@ class Orchestrator:
                 result = registry.execute(intent.skill, intent.args, ctx)
                 return Turn(reply=result.text(language), understood=True,
                             skill=intent.skill, via=intent.matched_by)
+
+            if local_only:
+                # The caller wants to know whether the offline rules recognise
+                # this, and nothing more. Used by the follow-up path to tell a
+                # command from the room's background conversation before
+                # spending a model call on it.
+                return Turn()
 
             turn = self._ask_brain(text, language, ctx)
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -27,11 +28,31 @@ log = logging.getLogger(__name__)
 
 CACHE_TTL_SEC = 7 * 24 * 3600
 
+#: A fuzzy score at or above this is the answer rather than a candidate. An
+#: exact name or alias scores 100; the nineties are a near-exact match with a
+#: word order or a suffix out of place, which is still not a real question.
+CONFIDENT = 92.0
+
+#: How alike two strings must be, as whole words, when neither contains the
+#: other. "whats app"/"whatsapp" is 94 and "note pad"/"notepad" is 93; the
+#: thing this keeps out is "photoshop"/"photos" at 80.
+_WHOLE_WORD_FLOOR = 88.0
+
 # Shortcut names that are never what someone means by "open X".
 _NOISE = (
     "uninstall", "readme", "read me", "release notes", "documentation", "help",
     "license", "changelog", "website", "support", "manual", "报告", "debug",
     "safe mode", "repair", "troubleshoot", "command prompt for",
+)
+
+# Executables that sit beside a program without being it. These are only
+# filtered out of the install-directory scan, where there is no curated
+# display name to go on — a Start Menu shortcut called "Update" is already
+# caught by _NOISE.
+_NOT_THE_APP = (
+    "setup", "install", "uninstall", "update", "upgrade", "crash", "report",
+    "helper", "service", "daemon", "launcher_", "unins", "vcredist", "dotnet",
+    "python", "node", "cleanup", "diagnos", "elevate", "broker", "handler",
 )
 
 # Spoken names that don't match the installed display name.
@@ -87,6 +108,16 @@ WEB_APPS: dict[str, str] = {
 }
 
 
+def _contains_word(haystack: str, needle: str) -> bool:
+    """Is `needle` present in `haystack` as a whole word?
+
+    Plain substring containment is what let "photos" match "photoshop". The
+    word boundary is the whole difference between a name that is part of
+    another name and a name that merely starts the same way.
+    """
+    return re.search(rf"\b{re.escape(needle)}\b", haystack) is not None
+
+
 @dataclass
 class AppEntry:
     name: str
@@ -120,7 +151,8 @@ class AppIndex:
         merged: dict[str, AppEntry] = {}
 
         for entry in (*self._scan_start_menu(), *self._scan_uwp(),
-                      *self._scan_app_paths(), *self._web_entries()):
+                      *self._scan_app_paths(), *self._scan_desktop(),
+                      *self._scan_install_dirs(), *self._web_entries()):
             key = entry.name.lower()
             existing = merged.get(key)
             # Prefer a real installed app over a web fallback of the same name.
@@ -165,6 +197,69 @@ class AppIndex:
                     kind="shortcut",
                     source=str(root),
                 ))
+        return found
+
+    def _scan_desktop(self) -> list[AppEntry]:
+        """Shortcuts on the Desktop, including the public one.
+
+        Plenty of installers drop a Desktop icon and nothing in the Start Menu,
+        and portable programs that were never installed at all often live here
+        and nowhere else. If it is on the desktop the user thinks of it as an
+        app on this machine, which is the whole test.
+        """
+        roots = [
+            Path(root) / "Desktop"
+            for root in (os.environ.get("USERPROFILE"), os.environ.get("PUBLIC"))
+            if root
+        ]
+        found: list[AppEntry] = []
+        for root in roots:
+            if not root.exists():
+                continue
+            for path in root.glob("*"):
+                if path.suffix.lower() not in (".lnk", ".url"):
+                    continue
+                name = path.stem.strip()
+                if not name or any(n in name.lower() for n in _NOISE):
+                    continue
+                found.append(AppEntry(name=name, launch=str(path),
+                                      kind="shortcut", source="Desktop"))
+        return found
+
+    def _scan_install_dirs(self) -> list[AppEntry]:
+        """Executables sitting in the usual install roots.
+
+        The last resort, and deliberately shallow: two levels down from
+        Program Files finds `Fooin
+oo.exe` without walking a tree that can
+        hold hundreds of thousands of files. Anything found here is a fallback
+        — the Start Menu and App Paths scans already cover the same programs
+        with better names, and merge order keeps theirs.
+        """
+        roots = [
+            Path(root) for root in (
+                os.environ.get("ProgramFiles"),
+                os.environ.get("ProgramFiles(x86)"),
+                os.environ.get("LOCALAPPDATA", "") and
+                str(Path(os.environ["LOCALAPPDATA"]) / "Programs"),
+            ) if root
+        ]
+        found: list[AppEntry] = []
+        for root in roots:
+            if not root.exists():
+                continue
+            for depth in ("*/*.exe", "*/*/*.exe"):
+                for path in root.glob(depth):
+                    name = path.stem.strip()
+                    lowered = name.lower()
+                    if not name or any(n in lowered for n in _NOISE):
+                        continue
+                    # Installers, updaters and crash handlers ship beside the
+                    # program and would otherwise answer to its name.
+                    if any(w in lowered for w in _NOT_THE_APP):
+                        continue
+                    found.append(AppEntry(name=name, launch=str(path),
+                                          kind="exe", source="install-dir"))
         return found
 
     def _scan_uwp(self) -> list[AppEntry]:
@@ -247,7 +342,7 @@ class AppIndex:
                 if term == needle:
                     best = 100.0
                     break
-                best = max(best, fuzz.WRatio(needle, term))
+                best = max(best, self._score(needle, term, fuzz))
             if best >= min_score:
                 # Prefer installed apps when scores are close; a web fallback
                 # shouldn't beat the real program the user has installed.
@@ -260,14 +355,47 @@ class AppIndex:
         scored.sort(key=lambda pair: (-pair[1], len(pair[0].name)))
         return scored[:limit]
 
+    @staticmethod
+    def _score(needle: str, term: str, fuzz) -> float:
+        """How well a spoken name matches one of an entry's search terms.
+
+        `WRatio` alone scores "photoshop" against "photos" at 92, because it
+        rewards a shared prefix as if it were a partial match. On a machine
+        without Photoshop that silently opened the Photos app — and a wrong
+        launch is worse than admitting the program isn't installed.
+
+        So a partial match only counts when one string contains the other *as
+        a whole word*: "chrome" in "google chrome" and "code" in "visual
+        studio code" qualify, "photos" inside "photoshop" does not. Failing
+        that, the two have to be close as whole words, which still recovers
+        the mishearings that matter ("whats app", "note pad", "calculater").
+        """
+        score = float(fuzz.WRatio(needle, term))
+        if _contains_word(term, needle) or _contains_word(needle, term):
+            return score
+        if fuzz.ratio(needle, term) >= _WHOLE_WORD_FLOOR:
+            return score
+        # Not the same word. Keep it far enough down that `resolve` won't take
+        # it, while leaving it visible to a wider search.
+        return min(score, 60.0)
+
     def resolve(self, query: str, min_score: int = 68) -> AppEntry | None:
         hits = self.search(query, limit=1, min_score=min_score)
         return hits[0][0] if hits else None
 
-    def ambiguous(self, query: str, margin: float = 6.0) -> list[AppEntry]:
-        """Candidates too close to call — the caller should ask which one."""
+    def ambiguous(self, query: str, margin: float = 6.0,
+                  confident_at: float = CONFIDENT) -> list[AppEntry]:
+        """Candidates too close to call — the caller should ask which one.
+
+        A strong top match ends the question. "open chrome" matches Google
+        Chrome's alias exactly; that some other Chrome-ish shortcut also scores
+        in the nineties is not a reason to stop and ask, and asking anyway was
+        turning "open vs code" into "did you mean Visual Studio Code, Visual
+        Studio Code Insiders?" on machines that had both. Ambiguity is only
+        worth raising when the best guess is itself a guess.
+        """
         hits = self.search(query, limit=4)
-        if len(hits) < 2:
+        if len(hits) < 2 or hits[0][1] >= confident_at:
             return []
         top = hits[0][1]
         close = [e for e, s in hits if top - s <= margin]

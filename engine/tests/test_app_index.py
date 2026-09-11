@@ -71,3 +71,54 @@ def test_search_terms_include_aliases_and_last_word(index):
     terms = index.entries[0].search_terms
     assert "google chrome" in terms
     assert "chrome" in terms
+
+
+# --- a near-miss must not become a wrong launch ----------------------------
+
+
+@pytest.fixture
+def photos_index():
+    """The real shape of the bug: Photos installed, Photoshop not."""
+    idx = AppIndex()
+    idx.entries = [
+        AppEntry(name="Photos", launch=r"shell:AppsFolder\Photos!App", kind="uwp"),
+        AppEntry(name="Google Chrome", launch=r"C:\chrome.lnk", kind="shortcut",
+                 aliases=["chrome", "browser"]),
+        AppEntry(name="Visual Studio Code", launch=r"C:\code.exe", kind="exe"),
+    ]
+    return idx
+
+
+def test_a_shared_prefix_is_not_a_match(photos_index):
+    """"photoshop" scored 92 against "photos" and silently opened it."""
+    assert photos_index.resolve("photoshop") is None
+
+
+def test_a_whole_word_inside_a_longer_name_still_matches(photos_index):
+    """The containment that should count: "code" names Visual Studio Code."""
+    assert photos_index.resolve("code").name == "Visual Studio Code"
+    assert photos_index.resolve("chrome").name == "Google Chrome"
+
+
+@pytest.mark.parametrize(
+    "spoken, expected",
+    [("whats app", "WhatsApp"), ("note pad", "Notepad"), ("calculater", "Calculator")],
+)
+def test_mishearings_are_still_recovered(index, spoken, expected):
+    """The stricter scorer must not undo what normalisation is there to catch."""
+    assert index.resolve(spoken).name == expected
+
+
+def test_a_confident_match_is_not_called_ambiguous(index):
+    """An exact alias hit is the answer, not a question."""
+    assert index.ambiguous("chrome") == []
+    assert index.ambiguous("vs code") == []
+
+
+def test_genuinely_close_candidates_are_still_raised():
+    idx = AppIndex()
+    idx.entries = [
+        AppEntry(name="Office Home", launch="a", kind="exe"),
+        AppEntry(name="Office Tools", launch="b", kind="exe"),
+    ]
+    assert len(idx.ambiguous("office")) > 1

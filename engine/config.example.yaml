@@ -26,7 +26,16 @@ wake_word:
   # than saying it again. voice = a short spoken "Yes?" / "जी?" in the language
   # of the last turn; chime = a 140 ms rising blip, instant and never overlaps
   # your next words; none = silence.
-  acknowledge: voice       # voice | chime | none
+  # chime is the default because the cue is dead time: the listen loop drops
+  # every microphone frame while it plays, so anything said over it is lost.
+  # A spoken "I'm listening." is about a second of that on every turn.
+  acknowledge: chime       # voice | chime | none
+  # How many of the last `confirm_window` 80 ms frames must clear the
+  # threshold. One frame is short enough for a cough or a consonant off the
+  # television to clear it; the wake word actually spoken holds the score up
+  # across several. Set confirm_frames to 1 for the old behaviour.
+  confirm_frames: 2
+  confirm_window: 3
 
 vad:
   backend: silero          # silero | energy
@@ -89,12 +98,22 @@ brain:
   history_turns: 6         # conversation turns kept for context
 
 permissions:
-  # Ask before running CONFIRM-tier skills (sleep, lock, close app).
+  # Ask before running CONFIRM-tier skills (close app, delete a file).
   confirm_tier_enabled: true
   # CRITICAL-tier (shutdown, restart, delete, send message) always confirms.
   # Set to true only if you really want unattended shutdowns.
   allow_critical_without_confirm: false
   confirm_timeout_sec: 12
+  # Re-tier individual skills without editing their declaration. A skill
+  # declares the risk that is right in general; this is where you say what is
+  # right for you. Sleep and lock ship as `safe` — both are fully reversible,
+  # and confirming them out loud costs a spoken prompt, a listening window and
+  # a second recognition pass on the commands you give most often.
+  #
+  #   risk_overrides:
+  #     sleep_pc: confirm      # ask me again before sleeping
+  #     close_app: safe        # stop asking before closing a window
+  risk_overrides: {}
 
 security:
   # Refuse to open the microphone until someone has signed in. The desktop app
@@ -135,4 +154,12 @@ assistant:
   default_reply_language: auto
   # Seconds to keep listening after a reply, so a follow-up or a correction
   # needs no wake word. 0 disables it.
+  #
+  # Nobody says the wake word in this window, so what arrives is as likely to
+  # be the room as it is to be you. Anything that doesn't match a skill
+  # offline has to come back clearly heard before it reaches the model, and is
+  # otherwise discarded without a word — a reply to a conversation you were
+  # not having with it is exactly what "it wakes up on its own" feels like.
+  # Three of these back to back end the chain and the wake word is needed
+  # again, so one detection can't hold the microphone open indefinitely.
   followup_sec: 6
