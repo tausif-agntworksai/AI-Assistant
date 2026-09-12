@@ -122,3 +122,81 @@ def test_whispers_favourite_inventions_are_dropped_either_way():
     for noise in ("Thanks for watching!", "[Music]", "..."):
         assert is_probable_hallucination(noise, short_answer=True), noise
         assert is_probable_hallucination(noise, short_answer=False), noise
+
+
+# --- the slow model runs once per recording -------------------------------
+
+
+class _Counting(Transcriber):
+    """Records how many times it was actually asked to decode."""
+
+    def __init__(self, text: str, confidence: float, name: str = "counting"):
+        self.text, self.confidence_value = text, confidence
+        self.calls = 0
+        self.name = name
+
+    def transcribe(self, audio, sample_rate=16000, *, short_answer=False, hint=None):
+        self.calls += 1
+        return Transcript(text=self.text, backend=self.name,
+                          avg_logprob=float(np.log(self.confidence_value)))
+
+
+ONE_SECOND = np.zeros(16000, dtype=np.float32)
+
+
+def test_an_utterance_is_never_decoded_twice_by_the_slow_model():
+    """Both escalation paths fire on a bad utterance, and they ask the same
+    question: `transcribe` because the fast model was unsure, and the
+    orchestrator because the words matched no skill. Greedy decoding is
+    deterministic, so the second pass was four seconds spent re-deriving a
+    transcript we already had — on the turns that were already the slowest.
+    """
+    fast, slow = _Counting("unsure", 0.40, "fast"), _Counting("the words", 0.90, "slow")
+    tiered = TieredTranscriber(fast, slow, min_confidence=0.62)
+
+    first = tiered.transcribe(ONE_SECOND, 16000)
+    again = tiered.escalate(ONE_SECOND, 16000, previous=first)
+
+    assert slow.calls == 1
+    assert first.text == again.text == "the words"
+
+
+def test_a_different_recording_is_still_decoded():
+    """The cache is keyed on the audio, not on the fact that one exists."""
+    fast, slow = _Counting("unsure", 0.40, "fast"), _Counting("the words", 0.90, "slow")
+    tiered = TieredTranscriber(fast, slow, min_confidence=0.62)
+
+    tiered.transcribe(ONE_SECOND, 16000)
+    tiered.transcribe(np.ones(16000, dtype=np.float32), 16000)
+    assert slow.calls == 2
+
+
+def test_a_reused_buffer_does_not_return_the_wrong_transcript():
+    """numpy hands out freed memory again, so a later utterance can land at
+    the same address as an earlier one. Keying on identity would answer it
+    with the previous speaker's words."""
+    fast, slow = _Counting("unsure", 0.40, "fast"), _Counting("the words", 0.90, "slow")
+    tiered = TieredTranscriber(fast, slow, min_confidence=0.62)
+
+    buffer = np.zeros(16000, dtype=np.float32)
+    tiered.transcribe(buffer, 16000)
+    buffer[:] = 0.5  # same object, entirely different audio
+    tiered.transcribe(buffer, 16000)
+    assert slow.calls == 2
+
+
+def test_a_failed_slow_pass_is_not_remembered():
+    """A transient failure should be retried, not cached as an empty answer."""
+    class _Broken(Transcriber):
+        calls = 0
+
+        def transcribe(self, audio, sample_rate=16000, *, short_answer=False, hint=None):
+            type(self).calls += 1
+            raise RuntimeError("model unavailable")
+
+    fast = _Counting("unsure", 0.40, "fast")
+    tiered = TieredTranscriber(fast, _Broken(), min_confidence=0.62)
+
+    tiered.transcribe(ONE_SECOND, 16000)
+    tiered.escalate(ONE_SECOND, 16000)
+    assert _Broken.calls == 2

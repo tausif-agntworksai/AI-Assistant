@@ -212,3 +212,102 @@ def test_segmenter_reports_silence_when_the_vad_never_fires():
             break
 
     assert result is SegmentResult.SILENT
+
+
+# --- endpointing telemetry -------------------------------------------------
+#
+# `record` is usually the largest item in a turn's budget after recognition,
+# and most of it is the silence waited through to be sure the user has
+# stopped. Whether decoding can safely begin before that wait is over turns on
+# one question — how often people go quiet mid-sentence — so the segmenter
+# counts it rather than leaving it to guesswork.
+
+
+class _Scripted:
+    """A VAD driven by a list of probabilities, so timings are exact."""
+
+    frame_size = 512
+
+    def __init__(self, script):
+        self.script, self.index = script, 0
+
+    def probability(self, frame):
+        value = self.script[self.index] if self.index < len(self.script) else 0.0
+        self.index += 1
+        return value
+
+    def reset(self):
+        pass
+
+
+_FRAME_MS = 1000 * 512 / 16000
+_FRAME = np.zeros(512, dtype=np.float32)
+
+
+def _frames(ms):
+    return int(round(ms / _FRAME_MS))
+
+
+def _run(script):
+    segmenter = SpeechSegmenter(
+        _Scripted(script), silence_ms=650, patience_silence_ms=1300,
+        min_speech_ms=200, settled_speech_ms=500, pause_probe_ms=250,
+    )
+    segmenter.reset()
+    for _ in script:
+        result = segmenter.push(_FRAME)
+        if result in (SegmentResult.COMPLETE, SegmentResult.TIMEOUT,
+                      SegmentResult.TOO_SHORT):
+            return segmenter, result
+    return segmenter, None
+
+
+def test_a_mid_utterance_pause_is_counted():
+    """"chrome ... kholo" — the case a speculative decode would waste work on."""
+    segmenter, result = _run(
+        [1.0] * _frames(600) + [0.0] * _frames(400)
+        + [1.0] * _frames(400) + [0.0] * _frames(900)
+    )
+    assert result is SegmentResult.COMPLETE
+    assert segmenter.long_pauses == 1
+    assert 350 <= segmenter.longest_pause_ms <= 450
+
+
+def test_an_unbroken_phrase_reports_no_pauses():
+    segmenter, result = _run([1.0] * _frames(900) + [0.0] * _frames(900))
+    assert result is SegmentResult.COMPLETE
+    assert segmenter.long_pauses == 0
+    assert segmenter.longest_pause_ms == 0
+
+
+def test_a_brief_pause_is_below_the_probe():
+    """Shorter than a speculative decode would wait for, so it costs nothing."""
+    segmenter, _ = _run(
+        [1.0] * _frames(600) + [0.0] * _frames(100)
+        + [1.0] * _frames(400) + [0.0] * _frames(900)
+    )
+    assert segmenter.long_pauses == 0
+
+
+def test_a_settled_utterance_uses_the_short_window():
+    segmenter, _ = _run([1.0] * _frames(900) + [0.0] * _frames(900))
+    assert segmenter.settled
+    assert segmenter.endpoint_ms < 700
+
+
+def test_an_utterance_that_never_settles_waits_twice_as_long():
+    """Reported so a slow turn can be explained rather than guessed at."""
+    segmenter, _ = _run([1.0] * _frames(250) + [0.0] * _frames(1400))
+    assert not segmenter.settled
+    assert segmenter.endpoint_ms > 1200
+
+
+def test_counters_reset_with_the_segmenter():
+    segmenter, _ = _run(
+        [1.0] * _frames(600) + [0.0] * _frames(400)
+        + [1.0] * _frames(400) + [0.0] * _frames(900)
+    )
+    assert segmenter.long_pauses == 1
+    segmenter.reset()
+    assert segmenter.long_pauses == 0
+    assert segmenter.longest_pause_ms == 0

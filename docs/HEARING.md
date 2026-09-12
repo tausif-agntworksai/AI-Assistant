@@ -126,6 +126,17 @@ inventing one — that case is a microphone problem, not a settings problem.
 `faster-whisper` (CTranslate2), int8 on CPU, in two tiers: `base` for every
 utterance, escalating to `small` when confidence is low.
 
+**The slow pass runs at most once per recording.** Two things ask for it, and
+on a bad utterance both do: `transcribe` escalates when the fast model comes
+back unsure, and the orchestrator escalates again when the words matched no
+skill. Since the audio and the settings are identical and greedy decoding is
+deterministic, the second request was four seconds spent re-deriving a
+transcript we already had — on exactly the utterances that were already the
+slowest. It is now memoised for the recording it belongs to, keyed on the
+audio's contents rather than the buffer's identity (numpy hands out freed
+memory again, so identity would answer a later utterance with an earlier
+speaker's words).
+
 ### Scored on task success, not word error rate
 
 WER is the wrong metric here. "chrome kolo" is a WER failure and a complete

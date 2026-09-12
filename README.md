@@ -290,6 +290,14 @@ typed command exercises exactly the path a spoken one takes.
 .\run-engine.bat --tune-wake-word                          # measure your own voice
 ```
 
+### The browser means your browser
+
+`“open the browser”` used to be a hardcoded synonym for Chrome, so on a machine
+whose default is Edge it opened the wrong program — a lookup that was never
+done, wearing the costume of a resolution bug. The default is now read from
+the user's own association and attached to whichever entry names it best, so
+the reply says *"Opening Microsoft Edge"* rather than *"Opening msedge"*.
+
 ### Where the time goes
 
 Every turn is logged stage by stage, so "it feels slow" has a number attached
@@ -310,6 +318,21 @@ largest single item in the budget and is a setting rather than a limit.
 `route` and `act` are deliberately separate. They used to be one number, which
 made the router look expensive when it costs a fraction of a millisecond and
 the work was all in the skill.
+
+Each turn also reports how it was endpointed — whether the utterance settled,
+how long the trailing-silence window was, and how often the speaker went quiet
+mid-sentence for longer than a quarter of a second:
+
+```
+turn 2.48s  ...  endpoint_ms=640 settled=True pauses=1 longest_pause_ms=384
+```
+
+That last number is there to settle a specific question. Most of `record` is
+silence waited through to be sure you have stopped, and decoding could start
+before that wait ends — but only if mid-sentence pauses are rare, because a
+speculative decode that the speaker then talks over has to be finished and
+thrown away. `“chrome… kholo”` is exactly that case. Rather than guess at how
+common it is, the counter accumulates during ordinary use.
 
 The same line appears in the HUD footer, and `tests/test_latency_budget.py`
 fails the build if routing or entity resolution regresses by an order of

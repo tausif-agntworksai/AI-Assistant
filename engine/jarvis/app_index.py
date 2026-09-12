@@ -28,6 +28,10 @@ log = logging.getLogger(__name__)
 
 CACHE_TTL_SEC = 7 * 24 * 3600
 
+#: Bumped whenever discovery or aliasing changes, so an existing cache is
+#: rebuilt rather than serving answers from the old rules for a week.
+CACHE_VERSION = 2
+
 #: A fuzzy score at or above this is the answer rather than a candidate. An
 #: exact name or alias scores 100; the nineties are a near-exact match with a
 #: word order or a suffix out of place, which is still not a real question.
@@ -57,7 +61,7 @@ _NOT_THE_APP = (
 
 # Spoken names that don't match the installed display name.
 _ALIASES: dict[str, tuple[str, ...]] = {
-    "chrome": ("google chrome", "browser"),
+    "chrome": ("google chrome",),
     "edge": ("microsoft edge",),
     "vscode": ("visual studio code", "vs code", "code"),
     "explorer": ("file explorer", "files", "my computer", "this pc"),
@@ -118,6 +122,56 @@ def _contains_word(haystack: str, needle: str) -> bool:
     return re.search(rf"\b{re.escape(needle)}\b", haystack) is not None
 
 
+#: What someone means by "the browser". Attached at build time to whichever
+#: program Windows actually opens links with, rather than to a fixed one.
+BROWSER_ALIASES = ("browser", "web browser", "default browser", "the browser",
+                   "internet")
+
+#: How alike an executable stem and a display name have to be before they are
+#: taken for the same program. "msedge"/"Microsoft Edge" scores 72; the things
+#: it has to stay clear of score far lower — "Microsoft Excel" is 38, and even
+#: "Microsoft Edge Dev", a different install, is 60.
+_SAME_PROGRAM = 70.0
+
+#: Where Windows records the user's own choice of browser.
+_URL_ASSOCIATION = (
+    r"Software\Microsoft\Windows\Shell\Associations"
+    r"\UrlAssociations\https\UserChoice"
+)
+
+
+def default_browser_exe() -> str:
+    """The executable Windows opens https links with, or "".
+
+    Read from the user's own association rather than assumed. "Open the
+    browser" was a hardcoded synonym for Chrome, so on a machine whose default
+    is Edge it opened the wrong program — which looks like a resolution bug
+    and is really a lookup that was never done.
+    """
+    try:
+        import winreg
+    except ImportError:  # not Windows
+        return ""
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _URL_ASSOCIATION) as key:
+            prog_id = str(winreg.QueryValueEx(key, "ProgId")[0])
+        command_key = prog_id + r"\shell\open\command"
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, command_key) as key:
+            command = str(winreg.QueryValueEx(key, "")[0])
+    except OSError as exc:
+        log.debug("No usable default-browser registration: %s", exc)
+        return ""
+
+    # A full command line: '"C:\...\msedge.exe" --single-argument %1'.
+    command = command.strip()
+    if command.startswith('"'):
+        command = command[1:].split('"', 1)[0]
+    else:
+        command = command.split(" ")[0]
+    return Path(command).name.lower()
+
+
 @dataclass
 class AppEntry:
     name: str
@@ -165,10 +219,47 @@ class AppIndex:
                     entry.aliases = sorted({*entry.aliases, key, *extra})
 
         self.entries = sorted(merged.values(), key=lambda e: e.name.lower())
+        self._alias_default_browser()
         self.built_at = time.time()
         self._save_cache()
         log.info("App index: %d entries in %.2fs", len(self.entries), time.perf_counter() - t0)
         return self.entries
+
+    def _alias_default_browser(self) -> None:
+        """Teach "the browser" to mean whatever this machine opens links with.
+
+        Matched on the executable, because that is the only thing the
+        association actually names. Where several entries point at the same
+        program — a Start Menu shortcut, an App Paths registration, a stray
+        copy in Program Files — the best-presented one wins, so the reply says
+        "Opening Microsoft Edge" rather than "Opening msedge".
+        """
+        from rapidfuzz import fuzz
+
+        exe = default_browser_exe()
+        if not exe:
+            return
+
+        stem = Path(exe).stem.lower()
+        exact = [e for e in self.entries if Path(e.launch).name.lower() == exe]
+        if not exact:
+            log.debug("Default browser %s matched no indexed app", exe)
+            return
+
+        # The Start Menu entry points at a .lnk, so it never matches on the
+        # executable — "Microsoft Edge" and "msedge.exe" only meet by name.
+        # Worth bridging, because the name is what gets spoken back.
+        named = [
+            e for e in self.entries
+            if e.kind != "web" and fuzz.WRatio(stem, e.name.lower()) >= _SAME_PROGRAM
+        ]
+        matches = exact + [e for e in named if e not in exact]
+
+        # Prefer a curated name over a bare executable, then the shortest.
+        rank = {"shortcut": 0, "uwp": 1, "exe": 2, "web": 3}
+        best = min(matches, key=lambda e: (rank.get(e.kind, 9), len(e.name)))
+        best.aliases = sorted({*best.aliases, *BROWSER_ALIASES})
+        log.info("Default browser: %s", best.name)
 
     def _scan_start_menu(self) -> list[AppEntry]:
         # Both variables are Windows-only. `Path(os.environ.get("APPDATA", ""))`
@@ -418,6 +509,12 @@ oo.exe` without walking a tree that can
             if not paths.APP_INDEX_CACHE.exists():
                 return False
             payload = json.loads(paths.APP_INDEX_CACHE.read_text(encoding="utf-8"))
+            if payload.get("version") != CACHE_VERSION:
+                # How entries are built changed, so what is on disk answers a
+                # question we no longer ask. Without this, a fix to aliasing or
+                # discovery stays invisible until the week-long TTL runs out.
+                log.info("App index cache is from an older layout — rebuilding")
+                return False
             if time.time() - payload.get("built_at", 0) > CACHE_TTL_SEC:
                 return False
             self.entries = [AppEntry(**e) for e in payload.get("entries", [])]
@@ -433,7 +530,8 @@ oo.exe` without walking a tree that can
             paths.ensure_dirs()
             paths.APP_INDEX_CACHE.write_text(
                 json.dumps(
-                    {"built_at": self.built_at, "entries": [asdict(e) for e in self.entries]},
+                    {"version": CACHE_VERSION, "built_at": self.built_at,
+                     "entries": [asdict(e) for e in self.entries]},
                     ensure_ascii=False,
                 ),
                 encoding="utf-8",

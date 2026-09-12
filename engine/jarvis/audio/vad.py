@@ -195,6 +195,7 @@ class SpeechSegmenter:
         no_speech_timeout_sec: float = 6.0,
         patience_silence_ms: int | None = None,
         settled_speech_ms: int = 500,
+        pause_probe_ms: int = 250,
     ) -> None:
         self.vad = vad
         self.sample_rate = sample_rate
@@ -209,6 +210,12 @@ class SpeechSegmenter:
         self.min_speech_frames = max(1, int(min_speech_ms / self.frame_ms))
         self.max_frames = int(max_utterance_sec * 1000 / self.frame_ms)
         self.no_speech_frames = int(no_speech_timeout_sec * 1000 / self.frame_ms)
+        # Not used for endpointing. It counts how often someone goes quiet
+        # mid-sentence for longer than this, which is the one number that
+        # decides whether decoding can safely start before they have finished
+        # speaking: a pause this long is exactly when a speculative decode
+        # would be started, and resuming is what makes it wasted.
+        self.pause_probe_frames = max(1, int(pause_probe_ms / self.frame_ms))
         self.reset()
 
     @property
@@ -228,6 +235,8 @@ class SpeechSegmenter:
         self._total_frames = 0
         self._started = False
         self.peak_level = 0.0
+        self.long_pauses = 0
+        self.longest_pause_frames = 0
 
     def push(self, frame: np.ndarray) -> SegmentResult:
         self._chunks.append(frame)
@@ -238,6 +247,13 @@ class SpeechSegmenter:
         self.peak_level = max(self.peak_level, float(np.abs(frame).max()))
 
         if is_speech:
+            if self._started and self._silence_run:
+                # A pause just ended, which means it was a pause and not the
+                # end of the utterance.
+                self.longest_pause_frames = max(self.longest_pause_frames,
+                                                self._silence_run)
+                if self._silence_run >= self.pause_probe_frames:
+                    self.long_pauses += 1
             self._speech_frames += 1
             self._silence_run = 0
             self._started = True
@@ -264,6 +280,26 @@ class SpeechSegmenter:
         if not self._chunks:
             return np.zeros(0, dtype=np.float32)
         return np.concatenate(self._chunks)
+
+    @property
+    def settled(self) -> bool:
+        """True once a full command's worth of speech is in the buffer.
+
+        Which of the two silence windows applies turns on this, so it is worth
+        reporting alongside the timing: a turn that never settled waited twice
+        as long to be called finished.
+        """
+        return self._speech_frames >= self.settled_frames
+
+    @property
+    def longest_pause_ms(self) -> float:
+        """The longest mid-utterance silence that turned out not to be the end."""
+        return self.longest_pause_frames * self.frame_ms
+
+    @property
+    def endpoint_ms(self) -> float:
+        """How much trailing silence this utterance had to produce to end."""
+        return self.required_silence * self.frame_ms
 
     @property
     def duration_sec(self) -> float:

@@ -507,6 +507,19 @@ class Orchestrator:
         if listening_at:
             timer.mark_earlier("record", time.monotonic() - listening_at)
 
+        # How this utterance was endpointed. `record` is usually the largest
+        # item in the budget after recognition, and most of it is the silence
+        # we wait through to be sure the user has stopped. Deciding whether
+        # decoding can start before that wait is over turns on one question —
+        # how often people go quiet mid-sentence — and this is where the
+        # answer accumulates.
+        segmenter = self.segmenter
+        if segmenter is not None:
+            timer.note(endpoint_ms=round(segmenter.endpoint_ms),
+                       settled=segmenter.settled,
+                       pauses=segmenter.long_pauses,
+                       longest_pause_ms=round(segmenter.longest_pause_ms))
+
         if is_too_quiet(audio, self.cfg.audio.sample_rate):
             self._warn_quiet_microphone()
 

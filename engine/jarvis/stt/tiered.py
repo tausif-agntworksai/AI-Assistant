@@ -56,6 +56,11 @@ class TieredTranscriber(Transcriber):
         self.name = f"tiered({getattr(fast, 'model_size', '?')}→"\
                     f"{getattr(accurate, 'model_size', '?')})"
         self._warming = False
+        #: The last accurate decode, keyed by exactly what produced it.
+        #: One entry is all that is ever needed: the only repeat caller
+        #: is the orchestrator asking again about the utterance it just
+        #: heard.
+        self._recent: tuple[tuple, Transcript] | None = None
 
     # -- warmup -------------------------------------------------------------
 
@@ -138,13 +143,47 @@ class TieredTranscriber(Transcriber):
         short_answer: bool,
         hint: str | None,
     ) -> Transcript:
+        """Decode with the slow model, at most once per recording.
+
+        Two things ask for this pass, and on a bad utterance both of them do:
+        `transcribe` escalates when the fast model comes back unsure, and the
+        orchestrator escalates again when the words matched no skill. The
+        second request is for the *same audio with the same settings*, and
+        greedy decoding is deterministic — so it was four seconds spent
+        arriving at a transcript we already had, on exactly the utterances
+        that were already the slowest.
+        """
+        key = self._key(audio, sample_rate, short_answer, hint)
+        if self._recent is not None and self._recent[0] == key:
+            log.info("Reusing the accurate decode for this recording")
+            return self._recent[1]
+
         try:
-            return self.accurate.transcribe(
+            result = self.accurate.transcribe(
                 audio, sample_rate, short_answer=short_answer, hint=hint
             )
         except Exception as exc:  # noqa: BLE001 - the fast result still stands
             log.error("Accurate pass failed (%s)", exc)
+            # Deliberately not cached. A failure is usually transient, and a
+            # second attempt is worth more than saving time on a turn that
+            # produced nothing anyway.
             return Transcript(text="", backend="accurate:failed")
+
+        self._recent = (key, result)
+        return result
+
+    @staticmethod
+    def _key(audio: np.ndarray, sample_rate: int, short_answer: bool,
+             hint: str | None) -> tuple:
+        """Identify a decode by its inputs, not by the buffer's identity.
+
+        `id(audio)` would be wrong in the one way that matters: numpy reuses
+        freed buffers, so a later utterance can land at the same address and
+        would be handed the previous utterance's transcript.
+        """
+        data = np.ascontiguousarray(audio)
+        return (hash(data.tobytes()), data.shape, str(data.dtype),
+                sample_rate, short_answer, hint or "")
 
     @staticmethod
     def _best_of(first: Transcript | None, second: Transcript) -> Transcript:
