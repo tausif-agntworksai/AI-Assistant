@@ -3,7 +3,7 @@
 
 import pytest
 
-from jarvis.app_index import AppEntry, AppIndex
+from jarvis.app_index import _ALIASES, AppEntry, AppIndex
 
 
 @pytest.fixture
@@ -243,3 +243,70 @@ def test_a_current_cache_is_reused(tmp_path, monkeypatch):
     idx = AppIndex()
     assert idx._load_cache() is True
     assert idx.resolve("notepad").name == "Notepad"
+
+
+# --- one spoken name means one program ------------------------------------
+#
+# The alias table used to be handed to every entry whose name *contained* any
+# of its words, which went wrong twice over: "ps" matched "maps", so Google
+# Maps answered to "powershell" at a confident 100; and "cmd" is a word in
+# "Git CMD" as surely as in "Command Prompt", so both claimed it and the
+# shorter name won.
+
+
+@pytest.fixture
+def crowded():
+    """The real shape of the collision, from an actual machine's index."""
+    idx = AppIndex()
+    idx.entries = [
+        AppEntry(name="Maps", launch=r"shell:AppsFolder\Maps!App", kind="uwp"),
+        AppEntry(name="Steps Recorder", launch=r"C:\psr.exe", kind="exe"),
+        AppEntry(name="Windows PowerShell", launch=r"C:\ps.lnk", kind="shortcut"),
+        AppEntry(name="Git CMD", launch=r"C:\gitcmd.lnk", kind="shortcut"),
+        AppEntry(name="Command Prompt", launch=r"C:\cmd.lnk", kind="shortcut"),
+        AppEntry(name="Settings", launch=r"shell:AppsFolder\Settings!App", kind="uwp"),
+        AppEntry(name="Control Panel", launch=r"C:\control.lnk", kind="shortcut"),
+    ]
+    for key, extra in _ALIASES.items():
+        idx._attach_alias(idx.entries, key, extra)
+    return idx
+
+
+def test_a_substring_is_not_an_alias(crowded):
+    """"ps" lives inside "maps" and "steps", which is how Google Maps came to
+    answer to "powershell"."""
+    assert crowded.resolve("ps").name == "Windows PowerShell"
+    assert crowded.resolve("powershell").name == "Windows PowerShell"
+    assert "powershell" not in crowded.entries[0].aliases  # Maps
+
+
+def test_maps_still_answers_to_its_own_name(crowded):
+    assert crowded.resolve("maps").name == "Maps"
+
+
+def test_an_alias_is_owned_by_one_entry(crowded):
+    owners = [e.name for e in crowded.entries if "cmd" in e.aliases]
+    assert owners == ["Command Prompt"]
+
+
+def test_a_coincidental_last_word_loses_to_a_declared_alias(crowded):
+    """"Git CMD" ends in the word; Command Prompt answers to it by design."""
+    assert crowded.resolve("cmd").name == "Command Prompt"
+
+
+def test_a_declared_name_still_wins_for_itself(crowded):
+    assert crowded.resolve("git cmd").name == "Git CMD"
+
+
+def test_two_distinct_programs_are_not_synonyms(crowded):
+    """Settings and Control Panel were listed as aliases of each other, so
+    asking for the second opened the first."""
+    assert crowded.resolve("settings").name == "Settings"
+    assert crowded.resolve("control panel").name == "Control Panel"
+
+
+def test_the_inferred_last_word_still_does_its_job():
+    """The penalty must not undo the rule that makes "chrome" find Chrome."""
+    idx = AppIndex()
+    idx.entries = [AppEntry(name="Google Chrome", launch="x", kind="shortcut")]
+    assert idx.resolve("chrome").name == "Google Chrome"

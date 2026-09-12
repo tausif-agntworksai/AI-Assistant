@@ -290,6 +290,31 @@ typed command exercises exactly the path a spoken one takes.
 .\run-engine.bat --tune-wake-word                          # measure your own voice
 ```
 
+### One spoken name, one program
+
+The alias table maps what people say to what is installed — "calc" to
+Calculator, "cmd" to Command Prompt. It used to be handed to *every* indexed
+app whose name contained any of those words, and both halves of that were
+wrong.
+
+Matching was by substring, so `ps` was found inside **ma**`ps`, **ste**`ps`
+and `wmpshare` — and Google Maps answered to "open powershell", scoring a
+confident 100 with no ambiguity raised, which is the worst way to be wrong.
+Matching is now on whole words.
+
+Attaching the group to everything that matched was the other half. "cmd" is a
+word in *Git CMD* as surely as in *Command Prompt*, so both claimed it and the
+shorter name won. A spoken name now belongs to one program: the entry with the
+best claim takes it, preferring an exact match, then the order the aliases
+were written in, since that order is the author saying which meaning comes
+first. A name the index merely *inferred* — the last word of a display name,
+which is what lets "chrome" find Google Chrome — is scored slightly below one
+somebody declared, so a coincidence loses to an intention.
+
+Two entries in the table were also describing different programs as synonyms:
+Windows Settings is not Control Panel, and Command Prompt is not Terminal.
+Asking for the second got you the first.
+
 ### The browser means your browser
 
 `“open the browser”` used to be a hardcoded synonym for Chrome, so on a machine

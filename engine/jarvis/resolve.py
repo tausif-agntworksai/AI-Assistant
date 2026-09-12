@@ -92,14 +92,21 @@ def rank(
     scored: list[Candidate] = []
     for item in items:
         best = 0.0
-        for term in terms(item):
+        for entry in terms(item):
+            # A term may carry a penalty, for names the index inferred rather
+            # than was told. "Git CMD" ends in the word "cmd" by coincidence;
+            # "Command Prompt" answers to it because somebody said so, and the
+            # second claim should win.
+            term, penalty = entry if isinstance(entry, tuple) else (entry, 0.0)
             term = (term or "").lower()
             if not term:
                 continue
             if term == needle:
-                best = 100.0
-                break
-            best = max(best, float(score(needle, term)))
+                best = max(best, 100.0 - penalty)
+                if not penalty:
+                    break
+                continue
+            best = max(best, float(score(needle, term)) - penalty)
 
         if adjust is not None:
             best = adjust(item, best)

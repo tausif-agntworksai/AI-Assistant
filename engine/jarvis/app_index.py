@@ -42,6 +42,12 @@ CONFIDENT = 92.0
 #: thing this keeps out is "photoshop"/"photos" at 80.
 _WHOLE_WORD_FLOOR = 88.0
 
+#: How much worse a match on a name's inferred last word is than a match
+#: on the name or a declared alias. Small on purpose: enough to break a
+#: tie in favour of the curated name, not enough to stop "chrome" from
+#: finding Google Chrome when nothing better exists.
+_INFERRED_PENALTY = 3.0
+
 # Shortcut names that are never what someone means by "open X".
 _NOISE = (
     "uninstall", "readme", "read me", "release notes", "documentation", "help",
@@ -65,8 +71,11 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "edge": ("microsoft edge",),
     "vscode": ("visual studio code", "vs code", "code"),
     "explorer": ("file explorer", "files", "my computer", "this pc"),
-    "settings": ("windows settings", "control panel", "setting"),
-    "cmd": ("command prompt", "terminal"),
+    # Control Panel and Windows Settings are different programs, and so are
+    # Command Prompt and Terminal. Listing one as a synonym for the other
+    # meant asking for the second and being given the first.
+    "settings": ("windows settings", "setting"),
+    "cmd": ("command prompt",),
     "powershell": ("windows powershell", "ps"),
     "task manager": ("taskmgr", "task manger"),
     "whatsapp": ("whats app", "watsapp", "vhatsapp"),
@@ -189,6 +198,23 @@ class AppEntry:
             base.append(words[-1])
         return [t.lower() for t in base if t]
 
+    @property
+    def weighted_terms(self) -> list[tuple[str, float]]:
+        """`search_terms`, with the inferred last word marked as weaker.
+
+        The last word of a display name is a guess the index makes, not
+        something anyone declared, and occasionally the guess collides with a
+        real name: "Git CMD" ends in "cmd", so it answered to "cmd" exactly as
+        strongly as Command Prompt did and won on being shorter. A small
+        penalty settles those in favour of the curated name without giving up
+        the rule, which is what makes "chrome" find Google Chrome.
+        """
+        declared = [(t.lower(), 0.0) for t in [self.name, *self.aliases] if t]
+        words = self.name.split()
+        if len(words) > 1:
+            declared.append((words[-1].lower(), _INFERRED_PENALTY))
+        return declared
+
 
 class AppIndex:
     def __init__(self) -> None:
@@ -214,9 +240,7 @@ class AppIndex:
                 merged[key] = entry
 
         for key, extra in _ALIASES.items():
-            for entry in merged.values():
-                if key in entry.name.lower() or any(a in entry.name.lower() for a in extra):
-                    entry.aliases = sorted({*entry.aliases, key, *extra})
+            self._attach_alias(merged.values(), key, extra)
 
         self.entries = sorted(merged.values(), key=lambda e: e.name.lower())
         self._alias_default_browser()
@@ -224,6 +248,49 @@ class AppIndex:
         self._save_cache()
         log.info("App index: %d entries in %.2fs", len(self.entries), time.perf_counter() - t0)
         return self.entries
+
+    @staticmethod
+    def _attach_alias(entries, key: str, extra: tuple[str, ...]) -> None:
+        """Give one spoken name to one program — the best claim to it wins.
+
+        This used to hand the whole group to every entry whose name *contained*
+        any of the words, and both halves of that were wrong.
+
+        Substring matching meant "ps" matched "ma**ps**", "ste**ps**" and
+        "wm**ps**hare", so Google Maps answered to "powershell" — and answered
+        confidently, scoring 100 with no ambiguity raised, which is the worst
+        way to be wrong. Whole words fix that.
+
+        Attaching to *every* match was the other half. "cmd" is a word in
+        "Git CMD" as surely as it is in "Command Prompt", and handing it to
+        both leaves the assistant picking between them on name length. A
+        spoken name means one program; this picks which, preferring an exact
+        match, then a properly presented entry, then the order the aliases
+        were written in — that order is the author saying which meaning comes
+        first.
+        """
+        names = (key, *extra)
+        rank = {"shortcut": 0, "uwp": 1, "exe": 2, "web": 3}
+        claims = []
+        for entry in entries:
+            lowered = entry.name.lower()
+            matched = [i for i, name in enumerate(names)
+                       if _contains_word(lowered, name)]
+            if not matched:
+                continue
+            exact = any(lowered == names[i] for i in matched)
+            # Position before presentation: the order the aliases were written
+            # in is the author saying which meaning comes first, and it has to
+            # outrank a nicer-looking entry further down the list. Otherwise
+            # "settings" lands on Control Panel, which is listed after it.
+            claims.append((not exact, matched[0], rank.get(entry.kind, 9),
+                           len(entry.name), entry))
+
+        if not claims:
+            return
+        claims.sort(key=lambda c: c[:4])
+        winner = claims[0][4]
+        winner.aliases = sorted({*winner.aliases, key, *extra})
 
     def _alias_default_browser(self) -> None:
         """Teach "the browser" to mean whatever this machine opens links with.
@@ -442,7 +509,7 @@ oo.exe` without walking a tree that can
 
         candidates = rank(
             query, self.entries,
-            terms=lambda e: e.search_terms,
+            terms=lambda e: e.weighted_terms,
             name=lambda e: e.name,
             score=lambda needle, term: self._score(needle, term, fuzz),
             floor=min_score,
