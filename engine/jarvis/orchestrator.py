@@ -40,10 +40,12 @@ from .audio.player import AudioPlayer
 from .audio.vad import SegmentResult, SpeechSegmenter, create_vad
 from .audio.wakeword import create_wakeword
 from .bus import Event, State, bus
+from .cancel import Cancelled, control, is_stop_request
 from .config import settings
 from .context import (TurnMemory, repair_referent_args,
                       resolve_object_pronoun, resolve_pronouns)
 from .metrics import TurnTimer
+from .voice import voice
 from .nlu.confirm import is_affirmative
 from .nlu.rules import route
 from .permissions import Capability, Risk, consent, gate
@@ -222,6 +224,28 @@ class Orchestrator:
         set_announce_handler(None)
         gate.set_confirmer(None)
         log.info("Engine stopped")
+
+    def cancel_current_turn(self, reason: str = "user") -> bool:
+        """Stop what is running and stop talking about it.
+
+        Both halves matter. Cancelling the turn without stopping playback
+        leaves the assistant cheerfully finishing a sentence about something it
+        has abandoned; stopping playback without cancelling the turn is what
+        barge-in did before this existed, and the work carried on unseen.
+
+        Returns whether there was anything to stop, so a caller can tell
+        "cancelled" from "nothing was happening".
+        """
+        fired = control.cancel_current(reason)
+        if self.speaker is not None:
+            self.speaker.stop()
+        self.player.stop()
+        bus.publish(Event.CANCELLED, reason=reason, was_running=fired)
+        if not fired:
+            bus.set_state(State.IDLE)
+        log.info("Cancel requested (%s) — %s", reason,
+                 "a turn was stopped" if fired else "nothing was running")
+        return fired
 
     def trigger_listen(self) -> None:
         """Start listening without the wake word (hotkey or HUD button)."""
@@ -726,6 +750,16 @@ class Orchestrator:
 
         # Before routing, because the matcher never sees pronouns: normalise
         # strips them and the example matcher lists them as stopwords.
+        # Checked *above* the turn lock, and before anything else touches the
+        # words. A cancellation that waits its turn arrives after the thing it
+        # was meant to stop has already finished, which is the same as not
+        # having a stop button at all.
+        if control.active and is_stop_request(text):
+            self.cancel_current_turn()
+            return Turn(reply=("ठीक है, रोक दिया।" if language.startswith("hi")
+                               else "Stopped."),
+                        understood=True, via="local")
+
         spoken = text
         text = resolve_pronouns(text, self.memory)
         text = resolve_object_pronoun(text, self.memory)
@@ -733,7 +767,7 @@ class Orchestrator:
                            dry_run=dry_run, account=session.account,
                            recent=self.memory.snapshot())
 
-        with self._busy:
+        with control.turn(), self._busy:
             with timer.stage("route"):
                 intent = route(text, threshold=float(self.cfg.brain.rules_threshold))
 
@@ -750,7 +784,12 @@ class Orchestrator:
                 with timer.stage("act"):
                     result = registry.execute(intent.skill, intent.args, ctx)
                 self.memory.record(intent.skill, result.data, result.ok)
-                return Turn(reply=result.text(language), understood=True,
+                # A skill that did its job and said nothing still deserves a
+                # word — silence after "next track" is indistinguishable from
+                # not having been heard.
+                spoken = voice.compose(result.text(language), language,
+                                       acted=result.ok)
+                return Turn(reply=spoken, understood=True,
                             skill=intent.skill, via=intent.matched_by)
 
             if local_only:
@@ -776,6 +815,20 @@ class Orchestrator:
         from .nlu.llm import brain
 
         timer = timer or TurnTimer()
+
+        if not self.cfg.assistant.may_use_model:
+            # `fast` and `offline` stop here by design. Saying so plainly beats
+            # silence: the command was heard and understood to be one the rules
+            # don't cover, which is a different thing from not being heard.
+            mode = self.cfg.assistant.mode
+            log.info("Model skipped — %s mode", mode)
+            return Turn(
+                reply=("अभी fast mode चालू है, इसलिए ये सवाल नहीं भेज सकता।"
+                       if language.startswith("hi")
+                       else f"I'm in {mode} mode, so I can't send that one out. "
+                            "Computer commands still work."),
+                understood=True, via="local",
+            )
 
         if not brain.available:
             # The rules didn't recognise it and there is no model to ask. Say so
@@ -851,7 +904,11 @@ class Orchestrator:
             replies.append(result.speech)
 
         understood = bool(result.actions or result.speech.strip())
-        return Turn(reply=" ".join(replies), understood=understood,
+        # The model's prose is where the hedging comes from, so this is the
+        # reply the voice layer is really aimed at.
+        spoken = voice.compose(" ".join(replies), language,
+                               acted=bool(result.actions))
+        return Turn(reply=spoken, understood=understood,
                     skill=result.actions[0].skill if result.actions else "",
                     via="llm")
 
@@ -903,7 +960,10 @@ class Orchestrator:
         """Speak and block until done. Used where ordering matters."""
         if not text.strip() or self.speaker is None:
             return True
-        if not consent.allows(Capability.SPEAKER):
+        # Silent mode and a revoked speaker permission end in the same place —
+        # the reply still reaches the window, it just isn't read out. Publishing
+        # it either way is what keeps silent mode usable rather than mute.
+        if not consent.allows(Capability.SPEAKER) or not self.cfg.assistant.speaks:
             bus.publish(Event.REPLY, text=text, language=language,
                         spoken=False, via=via)
             return True

@@ -47,6 +47,7 @@ class Event(str, Enum):
     LOG = "log"
     LEVEL = "level"  # live mic amplitude, for the HUD waveform
     TIMING = "timing"  # stage-by-stage latency for one finished turn
+    CANCELLED = "cancelled"  # a turn was called off before it finished
     #: Something needed the language model and no key has been set. The HUD
     #: opens settings on this rather than making the user work out why a
     #: question went unanswered.

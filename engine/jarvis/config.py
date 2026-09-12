@@ -246,6 +246,39 @@ class AssistantConfig(BaseModel):
     # command needs no wake word. 0 disables it.
     followup_sec: float = 6.0
 
+    # How much the assistant is allowed to spend on a turn, and how much it is
+    # allowed to say. A mode changes *how* something is done; it never changes
+    # *what can be done*, so no mode adds or removes a single skill.
+    #
+    #   normal  — the shipped balance: rules first, the model when they miss.
+    #   fast    — offline only. The rules answer or nothing does, which makes
+    #             every turn instant and some turns unanswerable.
+    #   deep    — let the model think harder on the turns that reach it.
+    #   silent  — do everything, say nothing aloud; replies go to the window.
+    #   offline — assume no network: no model, no neural voice, no web skills.
+    mode: Literal["normal", "fast", "deep", "silent", "offline"] = "normal"
+
+    # Suppresses everything the assistant would have said unprompted. Kept
+    # separate from `mode` because wanting quiet for an hour is not the same
+    # as wanting a different kind of assistant, and folding the two together
+    # would mean choosing between a fast Jarvis and an undisturbed one.
+    do_not_disturb: bool = False
+
+    @property
+    def speaks(self) -> bool:
+        """Whether a reply is spoken aloud at all."""
+        return self.mode != "silent"
+
+    @property
+    def may_use_model(self) -> bool:
+        """Whether a turn the rules missed may reach the language model."""
+        return self.mode not in ("fast", "offline")
+
+    @property
+    def effort(self) -> str | None:
+        """Reasoning effort for this mode, or None to leave the config alone."""
+        return {"deep": "high", "fast": "low"}.get(self.mode)
+
 
 class MessagingConfig(BaseModel):
     """How "say hi to sana" turns into a sent message."""

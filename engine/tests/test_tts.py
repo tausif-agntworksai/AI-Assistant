@@ -71,3 +71,63 @@ def test_short_acknowledgements_are_one_chunk():
     """The wake-word reply must never be split into two synthesis calls."""
     assert chunk_text("Mm-hmm?") == ["Mm-hmm?"]
     assert chunk_text("जी?") == ["जी?"]
+
+
+# --- the first chunk decides how soon speech starts ------------------------
+#
+# `EdgeSpeaker.speak` synthesises chunk n+1 while chunk n plays, so the wait
+# before the first sound is the time to synthesise the *first chunk* — not the
+# whole reply. That only helps if the first chunk is actually short, and for a
+# long time it wasn't: anything under 220 characters came back unsplit, which
+# is most replies.
+
+
+def test_a_two_sentence_reply_starts_speaking_after_the_first_sentence():
+    parts = chunk_text("The meeting has moved to 4 PM. I've let Sana know as well.")
+    assert len(parts) == 2
+    assert parts[0] == "The meeting has moved to 4 PM."
+
+
+def test_a_single_sentence_is_left_whole():
+    assert chunk_text("Opening Chrome.") == ["Opening Chrome."]
+
+
+def test_a_short_opener_absorbs_the_next_sentence():
+    """"Done." is not worth its own websocket connection."""
+    assert chunk_text("Done. Opening Chrome.") == ["Done. Opening Chrome."]
+
+
+def test_later_chunks_are_allowed_to_be_long():
+    """Once audio is playing, synthesis runs ahead — bigger chunks there mean
+    fewer round trips and prosody that isn't chopped mid-thought."""
+    parts = chunk_text(
+        "Battery is at 65 percent and charging. You have about three hours "
+        "left. I'd suggest plugging in before the call."
+    )
+    assert len(parts) == 2
+    assert parts[0] == "Battery is at 65 percent and charging."
+    assert len(parts[1]) > len(parts[0])
+
+
+def test_hindi_sentences_split_on_the_danda():
+    parts = chunk_text(
+        "लैपटॉप को सुला रहा हूँ। शुभ रात्रि। आराम कीजिए। कल मिलते हैं।"
+    )
+    assert len(parts) >= 2
+    assert parts[0].startswith("लैपटॉप")
+
+
+def test_every_chunk_is_non_empty_and_nothing_is_lost():
+    text = ("First sentence here. Second one follows. Third is a little "
+            "longer than the others. Fourth ends it.")
+    parts = chunk_text(text)
+    assert all(p.strip() for p in parts)
+    joined = " ".join(parts)
+    for word in ("First", "Second", "Third", "Fourth"):
+        assert word in joined
+
+
+def test_a_uniform_limit_is_still_available():
+    """Passing the floor as zero restores one-chunk-per-cap behaviour."""
+    text = "One. Two. Three."
+    assert chunk_text(text, first_min_chars=len(text)) == [text]

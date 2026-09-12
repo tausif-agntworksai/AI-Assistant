@@ -173,7 +173,25 @@ def make_provider(flavour: Flavour) -> Provider:
         api_key: str,
         model: str,
         max_tokens: int = 2048,
+        effort: str = "low",
+        **_: Any,
     ) -> Completion:
+        """One turn against an OpenAI-shaped chat completions API.
+
+        `effort` is accepted and ignored. It is a real setting on Anthropic and
+        Gemini, and `Brain.interpret` passes it to whichever provider is
+        selected — so omitting it here did not mean "this provider has no
+        effort setting", it meant `TypeError: complete() got an unexpected
+        keyword argument 'effort'` on every single request. The broad handler
+        in `Brain` caught it and the user heard "I couldn't reach my brain just
+        now", which made all four OpenAI-shaped providers look like a network
+        problem. A flavour whose models support a reasoning effort can start
+        honouring this; the rest ignore it deliberately.
+
+        `**_` is the same guard made general: this signature is called by name
+        from one place that cannot see it, so a parameter added there must
+        never again take four providers offline.
+        """
         body: dict[str, Any] = {
             "model": model or flavour.default_model,
             "max_tokens": max_tokens,

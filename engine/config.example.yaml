@@ -150,6 +150,22 @@ messaging:
 
 assistant:
   name: Jarvis
+  # How much the assistant may spend on a turn, and how much it may say.
+  # A mode changes *how* something is done; it never changes *what can be
+  # done*, so no mode adds or removes a single skill.
+  #
+  #   normal  — the shipped balance: rules first, the model when they miss.
+  #   fast    — offline only. The rules answer or nothing does, which makes
+  #             every turn instant and some turns unanswerable.
+  #   deep    — let the model think harder on the turns that reach it.
+  #   silent  — do everything, say nothing aloud; replies go to the window.
+  #   offline — assume no network: no model, no neural voice, no web skills.
+  mode: normal
+
+  # Suppresses everything Jarvis would have said unprompted. Kept separate
+  # from `mode` because wanting quiet for an hour is not the same as wanting
+  # a different kind of assistant.
+  do_not_disturb: false
   # Language for replies when detection is ambiguous: hi | en | auto
   default_reply_language: auto
   # Seconds to keep listening after a reply, so a follow-up or a correction
