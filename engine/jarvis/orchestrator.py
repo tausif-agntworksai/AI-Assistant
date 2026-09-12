@@ -41,6 +41,8 @@ from .audio.vad import SegmentResult, SpeechSegmenter, create_vad
 from .audio.wakeword import create_wakeword
 from .bus import Event, State, bus
 from .config import settings
+from .context import (TurnMemory, repair_referent_args,
+                      resolve_object_pronoun, resolve_pronouns)
 from .metrics import TurnTimer
 from .nlu.confirm import is_affirmative
 from .nlu.rules import route
@@ -115,10 +117,18 @@ class Orchestrator:
         self._followup_until = 0.0
         self._in_followup = False
         self._followup_chain = 0
+        #: Monotonic marks for the two stages that finish before there is an
+        #: utterance to time. `_woke_at` is unset for the hotkey, the HUD and
+        #: follow-ups, none of which involve the wake word at all.
+        self._woke_at = 0.0
+        self._listening_at = 0.0
         self._misses = 0
         self._recent_peak = 0.0
         self._quiet_warned = False
         self.last_language = "en"
+        #: What we were just talking about, so "tell her I'll be late" has
+        #: somebody to be about. Short-lived and never persisted.
+        self.memory = TurnMemory()
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -379,6 +389,7 @@ class Orchestrator:
                 if self._wake_available:
                     for frame in ww_frames.push(block):
                         if self.wake.triggered(frame):
+                            self._woke_at = time.monotonic()
                             self._acknowledge()
                             self._begin_listening(preroll, vad_frames)
                             listening = True
@@ -424,6 +435,11 @@ class Orchestrator:
         self.segmenter.reset(preroll=preroll.read())
         preroll.clear()
         self._in_followup = follow_up
+        # Everything between the wake word firing and this instant is dead
+        # time: the acknowledgement is playing and its frames are dropped, so
+        # anything said over it is lost. Worth measuring precisely because it
+        # is the one part of the turn that buys the user nothing.
+        self._listening_at = time.monotonic()
         bus.set_state(State.LISTENING, follow_up=follow_up)
 
     def _acknowledge(self) -> None:
@@ -481,6 +497,16 @@ class Orchestrator:
         timer = TurnTimer()
         timer.note(follow_up=follow_up)
 
+        # The microphone half of the turn, which happened before this timer
+        # existed. Consumed rather than read, so a second utterance can't
+        # inherit the first one's wake mark.
+        woke_at, self._woke_at = self._woke_at, 0.0
+        listening_at, self._listening_at = self._listening_at, 0.0
+        if woke_at and listening_at:
+            timer.mark_earlier("wake", listening_at - woke_at)
+        if listening_at:
+            timer.mark_earlier("record", time.monotonic() - listening_at)
+
         if is_too_quiet(audio, self.cfg.audio.sample_rate):
             self._warn_quiet_microphone()
 
@@ -513,9 +539,8 @@ class Orchestrator:
         # say that again?" at a conversation the user isn't having with us is
         # exactly what "it wakes up on its own" feels like from the outside.
         if follow_up:
-            with timer.stage("route"):
-                turn = self._handle(transcript.text, language, source="voice",
-                                    resolve=False, local_only=True)
+            turn = self._handle(transcript.text, language, source="voice",
+                                resolve=False, local_only=True, timer=timer)
             if not turn.understood and transcript.confidence < _FOLLOWUP_BRAIN_CONFIDENCE:
                 log.info("Follow-up audio discarded as noise: %r (confidence %.2f)",
                          transcript.text[:60], transcript.confidence)
@@ -523,13 +548,11 @@ class Orchestrator:
                 bus.set_state(State.IDLE)
                 return
             if not turn.understood:
-                with timer.stage("brain"):
-                    turn = self._handle(transcript.text, language, source="voice",
-                                        resolve=False)
-        else:
-            with timer.stage("route"):
                 turn = self._handle(transcript.text, language, source="voice",
-                                    resolve=False)
+                                    resolve=False, timer=timer)
+        else:
+            turn = self._handle(transcript.text, language, source="voice",
+                                resolve=False, timer=timer)
 
         # Words that route to nothing are usually the wrong words. The audio is
         # still here, so ask the bigger model before asking the user. Not worth
@@ -544,19 +567,27 @@ class Orchestrator:
 
         self._followup_chain = self._followup_chain + 1 if follow_up else 0
 
-        # Logged before the reply is spoken: TTS runs on its own thread and
-        # the user is already being answered by then, so waiting for it would
-        # measure something they are not waiting for.
         timer.note(via=turn.via, skill=turn.skill,
                    understood=turn.understood, words=len(transcript.text.split()))
-        timer.done()
 
         if turn.reply:
             # Speak on a worker thread so the listen loop keeps consuming audio
             # while the reply plays. Blocking here would park the only thread
             # that can notice the wake word, which is what barge-in needs.
-            self.speak_async(turn.reply, self.last_language, via=turn.via)
-        elif not turn.understood:
+            #
+            # The timer goes with it, and the turn is logged once the first
+            # sound reaches the speakers. Synthesis is the last thing the user
+            # waits through, so a turn logged before it would be reporting a
+            # wait nobody had — but only up to *first audio*, never the length
+            # of the reply itself, which they are no longer waiting on.
+            self.speak_async(turn.reply, self.last_language, via=turn.via,
+                             timer=timer)
+            return
+
+        # Nothing to say, so the turn ends here rather than at first audio.
+        timer.done()
+
+        if not turn.understood:
             if follow_up:
                 self._followup_chain = 0
                 bus.set_state(State.IDLE)
@@ -650,40 +681,62 @@ class Orchestrator:
         with none of the variance a real utterance brings.
         """
         timer = TurnTimer()
-        with timer.stage("route"):
-            turn = self._handle(text, language, source, dry_run)
+        turn = self._handle(text, language, source, dry_run, timer=timer)
         timer.note(via=turn.via, skill=turn.skill, understood=turn.understood)
         timer.done()
         return turn.reply
 
     def _handle(self, text: str, language: str = "en", source: str = "text",
                 dry_run: bool = False, resolve: bool = True,
-                local_only: bool = False) -> Turn:
+                local_only: bool = False, timer: TurnTimer | None = None) -> Turn:
         """`resolve=False` means the caller already decided the language.
 
         The voice path has Whisper's own label and its confidence to work
         with; re-running detection here would throw both away and reach a
         different answer from the same words.
+
+        `timer` is threaded through rather than wrapped around the call so
+        that deciding *what* to do and actually *doing* it are measured
+        separately. Wrapping this method counted skill execution as routing
+        time, which made the router look like the expensive part when it
+        costs a fraction of a millisecond.
         """
         text = (text or "").strip()
         if not text:
             return Turn()
 
+        timer = timer or TurnTimer()
+
         if resolve:
             language = self._resolve_language(None, language, text)
         self.last_language = language
+
+        # Before routing, because the matcher never sees pronouns: normalise
+        # strips them and the example matcher lists them as stopwords.
+        spoken = text
+        text = resolve_pronouns(text, self.memory)
+        text = resolve_object_pronoun(text, self.memory)
         ctx = SkillContext(language=language, transcript=text, source=source,
-                           dry_run=dry_run, account=session.account)
+                           dry_run=dry_run, account=session.account,
+                           recent=self.memory.snapshot())
 
         with self._busy:
-            intent = route(text, threshold=float(self.cfg.brain.rules_threshold))
+            with timer.stage("route"):
+                intent = route(text, threshold=float(self.cfg.brain.rules_threshold))
 
             if intent is not None:
+                repair_referent_args(intent.args, spoken, self.memory)
+                decision = intent.decision()
                 log.info("Routed locally: %s", intent)
                 bus.publish(Event.ACTION, skill=intent.skill, args=intent.args,
-                            via=intent.matched_by)
+                            via=intent.matched_by, decision=decision)
+                timer.note(risk=decision["risk_level"],
+                           path=decision["execution_path"],
+                           confidence=decision["confidence"])
                 bus.set_state(State.ACTING)
-                result = registry.execute(intent.skill, intent.args, ctx)
+                with timer.stage("act"):
+                    result = registry.execute(intent.skill, intent.args, ctx)
+                self.memory.record(intent.skill, result.data, result.ok)
                 return Turn(reply=result.text(language), understood=True,
                             skill=intent.skill, via=intent.matched_by)
 
@@ -694,7 +747,7 @@ class Orchestrator:
                 # spending a model call on it.
                 return Turn()
 
-            turn = self._ask_brain(text, language, ctx)
+            turn = self._ask_brain(text, language, ctx, timer)
 
         # Voice keeps its silence here on purpose: the caller still has the
         # recording and will re-decode it before saying anything. Typed input
@@ -705,8 +758,11 @@ class Orchestrator:
             turn.via = "local"
         return turn
 
-    def _ask_brain(self, text: str, language: str, ctx: SkillContext) -> Turn:
+    def _ask_brain(self, text: str, language: str, ctx: SkillContext,
+                   timer: TurnTimer | None = None) -> Turn:
         from .nlu.llm import brain
+
+        timer = timer or TurnTimer()
 
         if not brain.available:
             # The rules didn't recognise it and there is no model to ask. Say so
@@ -750,7 +806,8 @@ class Orchestrator:
             )
 
         bus.set_state(State.THINKING)
-        result = brain.interpret(text, language, self._live_context())
+        with timer.stage("brain"):
+            result = brain.interpret(text, language, self._live_context())
 
         if result.error:
             if result.error_kind == "network":
@@ -768,7 +825,9 @@ class Orchestrator:
         for action in result.actions:
             bus.publish(Event.ACTION, skill=action.skill, args=action.args, via="llm")
             bus.set_state(State.ACTING)
-            outcome = registry.execute(action.skill, action.args, ctx)
+            with timer.stage("act"):
+                outcome = registry.execute(action.skill, action.args, ctx)
+            self.memory.record(action.skill, outcome.data, outcome.ok)
             spoken = outcome.text(language)
             if spoken:
                 replies.append(spoken)
@@ -806,10 +865,12 @@ class Orchestrator:
             )
         return detect_language(text, whisper_language=detected, previous=self.last_language)
 
-    @staticmethod
-    def _live_context() -> dict[str, Any]:
+    def _live_context(self) -> dict[str, Any]:
         """Volatile facts for the LLM. Kept out of the cached system prompt."""
         context: dict[str, Any] = {"time": time.strftime("%I:%M %p").lstrip("0")}
+        recent = self.memory.describe()
+        if recent:
+            context["recent"] = recent
         window = winutil.foreground_window()
         if window.get("title"):
             context["foreground"] = window["title"][:80]
@@ -842,15 +903,50 @@ class Orchestrator:
                 self.capture.drain()
             return ok
 
-    def speak_async(self, text: str, language: str = "en", via: str = "") -> None:
+    def _finish_turn(self, timer: TurnTimer, started: float,
+                     limit: float = 15.0) -> None:
+        """Close the turn once the reply is actually audible.
+
+        Polled rather than pushed because the speaker backends differ too much
+        to share a callback: Edge synthesises a whole clip and hands it to the
+        player, while SAPI owns its own audio path and never touches the
+        player at all. Waiting on the player's own start timestamp is the one
+        signal both can be asked about, and the poll costs a few milliseconds
+        of a thread that would otherwise be idle.
+
+        On the SAPI path no start is ever recorded, so this gives up at
+        `limit` and logs the turn without a `tts` stage — a missing number
+        being better than an invented one.
+        """
+        while time.monotonic() - started < limit:
+            if self.player.last_started_at > started:
+                timer.mark("tts", self.player.last_started_at - started)
+                break
+            if not self._running.is_set():
+                break
+            time.sleep(0.01)
+        timer.done()
+
+    def speak_async(self, text: str, language: str = "en", via: str = "",
+                    timer: TurnTimer | None = None) -> None:
         """Speak without blocking the caller, returning to IDLE when finished."""
         if not text.strip() or self.speaker is None:
+            if timer is not None:
+                timer.done()
             bus.set_state(State.IDLE)
             self._open_followup()
             return
 
         def run() -> None:
             try:
+                started = time.monotonic()
+                if timer is not None:
+                    # Hand the timer a deadline it can stop at without waiting
+                    # for the whole reply to finish playing.
+                    threading.Thread(
+                        target=self._finish_turn, args=(timer, started),
+                        name="turn-timing", daemon=True,
+                    ).start()
                 self.speak(text, language, via=via)
             finally:
                 # Barge-in already moved us to LISTENING; don't stomp on it.

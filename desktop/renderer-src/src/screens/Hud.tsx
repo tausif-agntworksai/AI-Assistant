@@ -12,9 +12,18 @@ import { jarvis } from "../bridge";
 import { Badge, IconButton, Note, TitleBar } from "../components/ui";
 import { Orb } from "../components/Orb";
 import { WindowControls } from "../components/WindowControls";
-import { useEngine } from "../useEngine";
+import { useEngine, type Timing } from "../useEngine";
 import { Settings } from "./Settings";
 import "./hud.css";
+
+/** "wake 80ms - record 900ms - stt 1380ms", for the tooltip. */
+function stageBreakdown(timing: Timing): string {
+  const parts = Object.entries(timing.stages).map(
+    ([name, ms]) => `${name} ${ms}ms`,
+  );
+  if (timing.skill) parts.push(timing.skill);
+  return parts.join("  -  ");
+}
 
 type Tab = "chat" | "skills" | "activity";
 
@@ -179,6 +188,12 @@ export function Hud() {
           <span>
             Hotkey <b>{engine.info?.hotkey ?? "Ctrl+Alt+J"}</b>
           </span>
+          {engine.timing && (
+            <span className="timing" title={stageBreakdown(engine.timing)}>
+              {(engine.timing.totalMs / 1000).toFixed(2)}s{" "}
+              <b>{engine.timing.via || "—"}</b>
+            </span>
+          )}
           <span className="who truncate" title={account ?? ""}>
             {llm && !llm.has_key ? <Badge kind="warn">no AI key</Badge> : account}
           </span>

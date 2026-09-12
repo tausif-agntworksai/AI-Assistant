@@ -85,6 +85,10 @@ class SkillContext:
     #: Email of the signed-in account, recorded in the audit log so a shared
     #: machine's history says who asked for what.
     account: str = ""
+    #: What the assistant most recently resolved, by kind — {"contact":
+    #: "Sana Ahmed", "app": "Google Chrome"}. A skill that needs to know who
+    #: "her" was can ask instead of re-deriving it from the transcript.
+    recent: dict[str, str] = field(default_factory=dict)
 
 
 # --- specification ---------------------------------------------------------

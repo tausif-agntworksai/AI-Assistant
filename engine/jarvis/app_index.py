@@ -326,34 +326,39 @@ oo.exe` without walking a tree that can
 
     def search(self, query: str, limit: int = 5, min_score: int = 70
                ) -> list[tuple[AppEntry, float]]:
-        """Fuzzy-match `query`, best first."""
+        """Fuzzy-match `query`, best first.
+
+        The ranking mechanism is shared with contact lookup (`jarvis.resolve`);
+        what stays here is everything specific to applications — the
+        word-boundary scorer and the preference for something actually
+        installed over a web fallback of the same name.
+        """
         from rapidfuzz import fuzz
+
+        from .resolve import rank
 
         if not self.entries:
             self.build()
-        needle = (query or "").strip().lower()
-        if not needle:
-            return []
 
-        scored: list[tuple[AppEntry, float]] = []
-        for entry in self.entries:
-            best = 0.0
-            for term in entry.search_terms:
-                if term == needle:
-                    best = 100.0
-                    break
-                best = max(best, self._score(needle, term, fuzz))
-            if best >= min_score:
-                # Prefer installed apps when scores are close; a web fallback
-                # shouldn't beat the real program the user has installed.
-                if entry.kind == "web":
-                    best -= 4
-                elif entry.kind == "uwp":
-                    best += 2
-                scored.append((entry, min(100.0, best)))
+        def adjust(entry: AppEntry, score: float) -> float:
+            # A web fallback shouldn't beat the real program the user has
+            # installed, and a Store app is usually the one they mean.
+            if entry.kind == "web":
+                return score - 4
+            if entry.kind == "uwp":
+                return score + 2
+            return score
 
-        scored.sort(key=lambda pair: (-pair[1], len(pair[0].name)))
-        return scored[:limit]
+        candidates = rank(
+            query, self.entries,
+            terms=lambda e: e.search_terms,
+            name=lambda e: e.name,
+            score=lambda needle, term: self._score(needle, term, fuzz),
+            floor=min_score,
+            adjust=adjust,
+            limit=limit,
+        )
+        return [(c.item, c.score) for c in candidates]
 
     @staticmethod
     def _score(needle: str, term: str, fuzz) -> float:
@@ -394,12 +399,17 @@ oo.exe` without walking a tree that can
         Studio Code Insiders?" on machines that had both. Ambiguity is only
         worth raising when the best guess is itself a guess.
         """
+        from .resolve import Candidate, decide
+
         hits = self.search(query, limit=4)
-        if len(hits) < 2 or hits[0][1] >= confident_at:
+        outcome = decide(
+            [Candidate(item=e, name=e.name, score=s) for e, s in hits],
+            strong=confident_at, tie_window=margin,
+        )
+        if not outcome.ambiguous:
             return []
-        top = hits[0][1]
-        close = [e for e, s in hits if top - s <= margin]
-        return close if len(close) > 1 else []
+        return [outcome.best.item, *(c.item for c in outcome.considered[1:]
+                                     if c.name in outcome.rivals)]
 
     # -- cache --------------------------------------------------------------
 

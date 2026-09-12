@@ -55,6 +55,32 @@ class TurnTimer:
                 time.perf_counter() - start
             )
 
+    def mark(self, name: str, seconds: float) -> None:
+        """Record a duration measured outside this timer but inside its window.
+
+        Speech synthesis is the case: it happens on the speaking thread, after
+        the turn is otherwise finished, so it is timed there and handed back
+        rather than wrapped. `total` already covers it.
+        """
+        if seconds < 0:
+            return
+        self.stages[name] = self.stages.get(name, 0.0) + seconds
+
+    def mark_earlier(self, name: str, seconds: float) -> None:
+        """Record a duration that finished *before* this timer was created.
+
+        The microphone stages are the reason this exists. Waking and recording
+        are both over by the time there is an utterance to process, so they
+        arrive as elapsed wall-clock rather than as a block to wrap, and the
+        window has to be extended backwards to cover them. Without this the
+        turn total silently omits the endpointing tail — the better part of a
+        second the user spends waiting, every single turn.
+        """
+        if seconds < 0:
+            return
+        self.stages[name] = self.stages.get(name, 0.0) + seconds
+        self.started -= seconds
+
     def note(self, **facts: Any) -> None:
         """Record something about the turn that isn't a duration."""
         self.facts.update(facts)

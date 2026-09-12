@@ -290,6 +290,31 @@ typed command exercises exactly the path a spoken one takes.
 .\run-engine.bat --tune-wake-word                          # measure your own voice
 ```
 
+### Where the time goes
+
+Every turn is logged stage by stage, so "it feels slow" has a number attached
+to it and an optimisation can be checked rather than argued about:
+
+```
+turn 2.48s  wake 0.14  record 0.90  stt 1.21  route 0.00 act 0.22  tts 0.31
+```
+
+The two microphone stages are the ones that were invisible before, and they
+are worth reading first. `wake` is dead time by construction — the listen loop
+drops every frame while the acknowledgement plays, so anything said over it is
+lost, which is why the cue is a 140 ms chime rather than a spoken sentence.
+`record` includes the trailing silence the segmenter waits through before it
+decides you have stopped talking (`vad.silence_ms`), which is often the
+largest single item in the budget and is a setting rather than a limit.
+
+`route` and `act` are deliberately separate. They used to be one number, which
+made the router look expensive when it costs a fraction of a millisecond and
+the work was all in the skill.
+
+The same line appears in the HUD footer, and `tests/test_latency_budget.py`
+fails the build if routing or entity resolution regresses by an order of
+magnitude.
+
 ### If the wake word needs repeating
 
 `--tune-wake-word` asks you to say "hey jarvis" five times, records the peak
@@ -456,10 +481,50 @@ permissions:
     close_app: safe        # stop asking before closing a window
 ```
 
+Every routed command also reports the decision behind it — the intent, the
+confidence, the risk tier it will be gated at, and which path it came down —
+as one record rather than three things to join by hand:
+
+```json
+{"intent": "sleep_pc", "confidence": 0.95, "risk_level": 0,
+ "execution_path": "fast", "requires_reasoning": false}
+```
+
 Confirmation is deliberately strict: anything that isn't a clear yes counts as
 a no, and with nothing able to ask, gated actions are refused rather than
 allowed. Shutdown and restart also run on a 15-second delay — say **“cancel
 shutdown”** to stop one.
+
+### Not having to repeat yourself
+
+Every turn used to be an island. The model's history deliberately dropped any
+turn that ran a skill — the reasoning being that tool calls need their results
+echoed back to stay valid — so Jarvis could open Chrome and, one sentence
+later, have no idea what "it" meant. Rule-routed commands, which are most of
+them, left no trace at all.
+
+What was missing was never the data. Skills already report what they resolved:
+`open_app` hands back the application it matched, `send_message` the contact.
+That was being discarded one line after it arrived. Now it lands in a
+short-lived memory, and a pronoun can find it:
+
+```
+  you    “open whatsapp”              →  opens WhatsApp
+  you    “message sana”               →  resolves Sana Ahmed
+  you    “tell her I'll be late”      →  messages Sana Ahmed
+  you    “close it”                   →  closes WhatsApp
+```
+
+It expires after five minutes and is never written to disk — a referent is a
+half-finished sentence, not a setting, and an answer that is stale in a way
+you cannot see is worse than no answer.
+
+**Only people are substituted into what you said.** Pronouns for things are a
+trap: `“turn it up”` is a volume command that works today, and rewriting every
+"it" to the last application would break it. The one exception is `“close it”`,
+where a closing verb makes the object unambiguous. Hindi keeps its case
+particle — "usko" is "us" + "ko", and replacing the whole word with a name
+leaves a sentence that parses as nothing.
 
 ### Contacts, and the names you actually say
 

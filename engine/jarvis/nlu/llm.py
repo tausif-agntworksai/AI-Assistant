@@ -61,6 +61,22 @@ class Action:
     args: dict[str, Any] = field(default_factory=dict)
 
 
+def _describe(actions: list[Action]) -> str:
+    """A sentence standing in for what a tool-use turn did.
+
+    The model is told what it just did in the same form it would have said it,
+    so the next turn can refer back to it. "open_app(app=chrome)" would work
+    as well for a machine and read as noise to the model, which has to
+    continue a conversation from it.
+    """
+    done = []
+    for action in actions:
+        target = next((str(v) for v in action.args.values() if v), "")
+        verb = action.skill.replace("_", " ")
+        done.append(f"{verb} {target}".strip())
+    return "Done: " + ", ".join(done) + "."
+
+
 @dataclass
 class BrainResult:
     actions: list[Action] = field(default_factory=list)
@@ -151,6 +167,11 @@ class Brain:
             parts.append(f"the focused window is \"{ctx['foreground']}\"")
         if ctx.get("battery") is not None:
             parts.append(f"battery is at {ctx['battery']}%")
+        if ctx.get("recent"):
+            # What was just acted on, so "close it" and "tell her" have a
+            # referent. Volatile by nature, which is why it belongs here
+            # rather than in the cached system prompt.
+            parts.append(f"just now: {ctx['recent']}")
         if not parts:
             return ""
         return "[context: " + ", ".join(parts) + "]\n"
@@ -209,10 +230,15 @@ class Brain:
         actions = [Action(skill=call.skill, args=call.args) for call in completion.tool_calls]
         speech = completion.text
 
-        # Only conversational turns are worth remembering. Tool-use turns would
-        # need their tool_result blocks echoed back to stay valid, and the
-        # assistant speaks the skill's own reply rather than the model's.
-        if not actions and speech:
+        # Tool-use turns are remembered as a plain sentence rather than as
+        # tool_use blocks, which would need their tool_result counterparts
+        # echoed back to stay valid. Dropping them entirely was worse: the
+        # model would open Chrome and, one sentence later, have no idea what
+        # "it" referred to, because the only turn that mattered was the one
+        # turn never written down.
+        if actions:
+            self._remember(user_turn, speech or _describe(actions))
+        elif speech:
             self._remember(user_turn, speech)
 
         log.info("Brain %.2fs via %s -> %d action(s)%s", latency, provider.id,

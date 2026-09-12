@@ -185,3 +185,11 @@
 }
 .hint b { color: var(--muted); font-weight: 600; }
 .hint .who { margin-left: auto; max-width: 45%; text-align: right; }
+
+/* Turn latency in the footer. Quiet by default — it is there to be glanced
+   at when something feels slow, not to be read every turn. */
+.hud-foot .hint .timing {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.55;
+  cursor: default;
+}

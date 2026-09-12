@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 
 import numpy as np
 
@@ -28,6 +29,12 @@ class AudioPlayer:
         self._lock = threading.Lock()
         self.interrupted = False
         self._earcon = False
+        #: When the most recent playback actually started, as a monotonic
+        #: timestamp. The speaker synthesises before it can play anything, so
+        #: this is the only point that answers "how long after we decided to
+        #: reply did the user hear a sound?" — which is the latency that is
+        #: felt, as opposed to how long the reply then took to say.
+        self.last_started_at = 0.0
 
     @property
     def is_playing(self) -> bool:
@@ -101,6 +108,7 @@ class AudioPlayer:
                 finished_callback=on_finished,
             )
             self._stream.start()
+            self.last_started_at = time.monotonic()
 
     def wait(self, timeout: float | None = None) -> bool:
         """Block until playback ends. Returns False if it was interrupted."""

@@ -244,9 +244,11 @@ def resolve_recipient(target: str, address_kind: str = "phone") -> Recipient:
     # is the thing that made them stop using the feature.
     preferred = book.learned(spoken)
 
+    from .resolve import decide, rank
+
     wants_email = address_kind == "email"
-    needle = spoken.lower()
-    scored: list[tuple[float, str, str]] = []
+
+    reachable: list[tuple[str, str]] = []
     for contact in _contact_rows():
         name = str(contact.get("name", "")).strip()
         if wants_email:
@@ -265,40 +267,46 @@ def resolve_recipient(target: str, address_kind: str = "phone") -> Recipient:
             log.info("Contact %r resolved to %r from a remembered choice",
                      spoken, name)
             return _recipient(name, address, wants_email)
+        reachable.append((name, address))
+
+    def score(needle: str, term: str) -> float:
         # token_set_ratio so "sana" matches a contact saved as "Sana Khan",
         # which WRatio scores down for being shorter than the stored name.
-        score = max(
-            fuzz.token_set_ratio(needle, name.lower()),
-            fuzz.ratio(needle, name.lower()),
-        )
-        scored.append((score, name, address))
+        return max(fuzz.token_set_ratio(needle, term), fuzz.ratio(needle, term))
 
-    if not scored:
+    candidates = rank(
+        spoken, reachable,
+        terms=lambda row: [row[0]],
+        name=lambda row: row[0],
+        score=score,
+        floor=MATCH_FLOOR,
+        limit=4,
+    )
+    # A confident score must not silence a tie here: two people called Sana
+    # both score 100 against "Sana", and that is the case this exists for.
+    outcome = decide(candidates, strong=MATCH_STRONG, tie_window=TIE_WINDOW,
+                     strong_breaks_ties=False)
+
+    if outcome.best is None:
         return Recipient()
 
-    scored.sort(key=lambda row: row[0], reverse=True)
-    best_score, best_name, best_address = scored[0]
-    if best_score < MATCH_FLOOR:
-        return Recipient()
-
-    rivals = [
-        name for score, name, _ in scored[1:]
-        if best_score - score <= TIE_WINDOW and score >= MATCH_FLOOR
-    ]
-    if rivals:
+    if outcome.ambiguous:
         # Hold on to what was asked and who it was between. If the next attempt
         # names one of these, that answer is worth keeping — otherwise the user
         # is asked "which Sana?" every single time, which is the complaint this
         # whole path exists to avoid.
         global _pending
-        _pending = (spoken, tuple([best_name, *rivals[:2]]))
-        return Recipient(ambiguous=tuple([best_name, *rivals[:2]]))
+        choices = (outcome.best.name, *outcome.rivals[:2])
+        _pending = (spoken, choices)
+        return Recipient(ambiguous=choices)
 
-    if best_score < MATCH_STRONG:
+    best_name, best_address = outcome.best.item
+    if outcome.best.score < MATCH_STRONG:
         # Close enough to be the intended person, not close enough to message
         # without saying whose name was matched. The skill puts the resolved
         # name in its reply, so the user hears it before pressing send.
-        log.info("Contact %r matched %r at %.0f", spoken, best_name, best_score)
+        log.info("Contact %r matched %r at %.0f", spoken, best_name,
+                 outcome.best.score)
 
     _learn_from_answer(best_name)
     return _recipient(best_name, best_address, wants_email)

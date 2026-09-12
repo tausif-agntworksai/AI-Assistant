@@ -54,6 +54,14 @@ export interface EngineStatus {
   skills?: number;
 }
 
+/** Stage-by-stage latency for one finished turn, newest last. */
+export type Timing = {
+  totalMs: number;
+  stages: Record<string, number>;
+  via: string;
+  skill: string;
+};
+
 const RECONNECT_MS = 1500;
 const LEVEL_DECAY_MS = 400;
 const MAX_TURNS = 200;
@@ -67,6 +75,7 @@ export function useEngine() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [status, setStatus] = useState<EngineStatus>({});
   const [needsKey, setNeedsKey] = useState(false);
+  const [timing, setTiming] = useState<Timing | null>(null);
 
   const socket = useRef<WebSocket | null>(null);
   const retryTimer = useRef<number | undefined>(undefined);
@@ -135,6 +144,18 @@ export function useEngine() {
           decayTimer.current = window.setTimeout(() => setLevel(0), LEVEL_DECAY_MS);
           break;
         }
+
+        case "timing":
+          // What the last turn cost, broken down. The engine measures it; the
+          // HUD is the only place a person can actually see it without
+          // reading a log file.
+          setTiming({
+            totalMs: Number(event.total_ms ?? 0),
+            stages: (event.stages_ms ?? {}) as Record<string, number>,
+            via: String(event.via ?? ""),
+            skill: String(event.skill ?? ""),
+          });
+          break;
 
         case "transcript":
           setTurns((prev) => {
@@ -289,6 +310,7 @@ export function useEngine() {
     turns,
     status,
     needsKey,
+    timing,
     clearNeedsKey: useCallback(() => setNeedsKey(false), []),
     send,
     refresh,

@@ -152,7 +152,7 @@ def send_message(to: str, message: str = "", app: str = "") -> object:
             f"{chosen.label} khul gaya hai, {named} ko message taiyaar hai \u2014 "
             "aap send daba dijiye.",
             detail=f"draft to={who.phone} app={chosen.id}",
-            to=who.phone,
+            to=who.phone, contact=named, platform=chosen.id,
         )
 
     if not _await_focus(chosen.process, settings.messaging.focus_timeout_sec):
@@ -162,7 +162,7 @@ def send_message(to: str, message: str = "", app: str = "") -> object:
             f"{named} ko message {chosen.label} mein taiyaar hai, par window "
             "samay par saamne nahi aayi \u2014 aap send kar dijiye.",
             detail=f"unsent (no focus) to={who.phone} app={chosen.id}",
-            to=who.phone,
+            to=who.phone, contact=named, platform=chosen.id,
         )
 
     if not winutil.send_keys("enter"):
@@ -171,14 +171,14 @@ def send_message(to: str, message: str = "", app: str = "") -> object:
             "send when you're ready.",
             f"{named} ko message taiyaar hai \u2014 send daba dijiye.",
             detail=f"unsent (no keystroke) to={who.phone} app={chosen.id}",
-            to=who.phone,
+            to=who.phone, contact=named, platform=chosen.id,
         )
 
     return ok(
         f"Sent to {named} on {chosen.label}.",
         f"{named} ko {chosen.label} par bhej diya.",
         detail=f"sent to={who.phone} app={chosen.id}",
-        to=who.phone,
+        to=who.phone, contact=named, platform=chosen.id,
     )
 
 

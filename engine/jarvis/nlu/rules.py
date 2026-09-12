@@ -36,6 +36,49 @@ class Intent:
     def __str__(self) -> str:
         return f"{self.skill}({self.args}) [{self.matched_by} {self.confidence:.0f}]"
 
+    @property
+    def risk_level(self) -> int:
+        """0 safe, 1 confirm, 2 critical — the tier this will be gated at.
+
+        Read from the skill rather than stored, so it cannot drift out of
+        step with the declaration or with `permissions.risk_overrides`.
+        """
+        from ..permissions import gate
+        from ..skills.registry import registry
+
+        spec = registry.get(self.skill)
+        if spec is None:
+            return 0
+        return gate.effective_risk(self.skill, spec.risk).rank
+
+    @property
+    def execution_path(self) -> str:
+        """Which of the routing paths this decision came down.
+
+        `fast` is a regex hit — deterministic, microseconds, no model. `local`
+        is the fuzzy example matcher, which is still offline but is a guess.
+        Anything the model had to be asked about never becomes an `Intent` at
+        all, so there is no third value here.
+        """
+        return "fast" if self.matched_by == "rule" else "local"
+
+    def decision(self) -> dict[str, Any]:
+        """The whole routing decision as one record, for logs and the HUD.
+
+        Gathered in one place because it was previously spread across three:
+        the skill knew its risk, the matcher knew its confidence, and only the
+        orchestrator knew which path had been taken. Nobody could see a turn's
+        reasoning without joining all three by hand.
+        """
+        return {
+            "intent": self.skill,
+            "args": self.args,
+            "confidence": round(self.confidence / 100.0, 3),
+            "risk_level": self.risk_level,
+            "execution_path": self.execution_path,
+            "requires_reasoning": False,
+        }
+
 
 # --- verb vocabulary -------------------------------------------------------
 #

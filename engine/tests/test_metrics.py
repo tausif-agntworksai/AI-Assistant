@@ -3,6 +3,8 @@
 
 import time
 
+import pytest
+
 from jarvis.metrics import STAGES, TurnTimer
 
 
@@ -85,3 +87,47 @@ def test_measuring_costs_almost_nothing():
             pass
     elapsed = time.perf_counter() - start
     assert elapsed < 0.05, f"1000 stages took {elapsed:.3f}s"
+
+
+# --- durations measured outside the timer ----------------------------------
+
+
+def test_mark_records_a_duration_inside_the_window():
+    """Synthesis runs on the speaking thread; the window already covers it."""
+    timer = TurnTimer()
+    time.sleep(0.01)
+    before = timer.total
+    timer.mark("tts", 0.005)
+    assert timer.stages["tts"] == 0.005
+    # Marking must not stretch the total for something already inside it.
+    assert timer.total == pytest.approx(before, abs=0.01)
+
+
+def test_mark_earlier_extends_the_window_backwards():
+    """Waking and recording finish before the timer exists.
+
+    Without this the turn total omits the endpointing tail, which is most of
+    a second the user waits through on every turn.
+    """
+    timer = TurnTimer()
+    timer.mark_earlier("record", 1.5)
+    assert timer.stages["record"] == 1.5
+    assert timer.total >= 1.5
+
+
+def test_the_two_kinds_of_mark_do_not_double_count():
+    timer = TurnTimer()
+    timer.mark_earlier("wake", 0.10)
+    timer.mark_earlier("record", 0.90)
+    timer.mark("tts", 0.30)
+    # 1.0s of pre-timer work is in the total; the 0.3s of TTS was already there.
+    assert timer.total >= 1.0
+    assert timer.total < 1.5
+
+
+def test_a_negative_duration_is_ignored():
+    """A monotonic clock read out of order must not corrupt the budget."""
+    timer = TurnTimer()
+    timer.mark("stt", -5.0)
+    timer.mark_earlier("record", -5.0)
+    assert "stt" not in timer.stages and "record" not in timer.stages
