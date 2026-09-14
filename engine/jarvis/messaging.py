@@ -37,6 +37,11 @@ MATCH_STRONG = 86
 #: Below this, it is not a candidate at all.
 MATCH_FLOOR = 70
 
+#: Charged per word the user said that a stored name does not contain. Larger
+#: than TIE_WINDOW on purpose: one missing word has to be enough to settle a
+#: tie outright, or saying a name in full still ends in a question.
+_MISSING_WORD_PENALTY = 12.0
+
 #: Two candidates within this many points of each other are a tie worth asking
 #: about rather than guessing between. "Sana" against a contact list holding both
 #: Sana and Sanjay is the case this exists for.
@@ -212,6 +217,29 @@ def normalise_phone(raw: str) -> str:
     return digits
 
 
+def match_key(name: str) -> str:
+    """A contact name reduced to the words someone would actually say.
+
+    Phone books are not written to be spoken. The same person is "Sana Ahmed"
+    to one app, "sana ❤️" to another, "Sana(Office)" at work and "सना" in
+    Hindi — and a heart is not a word anybody pronounces. Scoring against the
+    stored spelling alone made "sana" a 50 against "sana(office)", far under
+    the floor, so a contact the user could see in their phone simply could not
+    be found.
+
+    `normalize` already does most of this for the command language — it
+    transliterates Devanagari, drops emoji, and splits on dots and brackets —
+    so this reuses it rather than growing a second, differently-wrong copy.
+    What it leaves behind are the joiners that only ever appear in names:
+    underscores and hyphens.
+    """
+    from .nlu.normalize import normalize
+
+    text = normalize(name or "")
+    text = re.sub(r"[^a-z0-9\s]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _looks_like_email(value: str) -> bool:
     return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", (value or "").strip()))
 
@@ -263,20 +291,37 @@ def resolve_recipient(target: str, address_kind: str = "phone") -> Recipient:
         # match that then has nowhere to send anything.
         if not name or not address:
             continue
-        if preferred and name.lower() == preferred.lower():
+        if preferred and match_key(name) == match_key(preferred):
             log.info("Contact %r resolved to %r from a remembered choice",
                      spoken, name)
             return _recipient(name, address, wants_email)
         reachable.append((name, address))
 
     def score(needle: str, term: str) -> float:
-        # token_set_ratio so "sana" matches a contact saved as "Sana Khan",
-        # which WRatio scores down for being shorter than the stored name.
-        return max(fuzz.token_set_ratio(needle, term), fuzz.ratio(needle, term))
+        """How well a spoken name matches one spelling of a stored one.
+
+        `token_set_ratio` so "sana" matches a contact saved as "Sana Khan",
+        which `WRatio` scores down for being shorter than the stored name. But
+        it treats a subset as a perfect match in both directions, which makes
+        saying *more* useless: "sana ahmed" scored 100 against both Sana Ahmed
+        and a contact saved as plain "sana", so naming someone in full asked
+        which one you meant instead of answering.
+
+        The asymmetry it is missing is that the two directions mean different
+        things. A stored name with extra words is ordinary — people shorten
+        names constantly — but a stored name *missing* a word the user said is
+        evidence against it being the one they meant.
+        """
+        base = max(fuzz.token_set_ratio(needle, term), fuzz.ratio(needle, term))
+        unmatched = set(needle.split()) - set(term.split())
+        return base - _MISSING_WORD_PENALTY * len(unmatched)
 
     candidates = rank(
-        spoken, reachable,
-        terms=lambda row: [row[0]],
+        match_key(spoken) or spoken, reachable,
+        # Both spellings, because `rank` takes the best term and neither is
+        # reliably the right one: the stored name is what the user chose, the
+        # match key is what they will actually say out loud.
+        terms=lambda row: [row[0], match_key(row[0])],
         name=lambda row: row[0],
         score=score,
         floor=MATCH_FLOOR,

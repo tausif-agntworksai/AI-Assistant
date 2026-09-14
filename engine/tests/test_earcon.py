@@ -279,3 +279,18 @@ def test_cues_are_real_words():
             assert bare not in NON_LEXICAL, (
                 f"{language}: {phrase!r} is a hum, not a word — it will mumble"
             )
+
+
+def test_the_chime_is_as_loud_as_the_voice_cue_it_replaces():
+    """The regression this pins down.
+
+    The chime carried a hardcoded amplitude while the spoken cues were
+    normalised to CUE_PEAK, leaving it 11.5 dB quieter. When the default cue
+    changed from voice to chime, the acknowledgement did not just get shorter,
+    it became hard to hear at all on laptop speakers -- so people said the
+    wake word a second time, which is the exact problem the cue exists to
+    prevent.
+    """
+    from jarvis.audio.earcon import CUE_PEAK
+
+    assert float(np.abs(chime()).max()) == pytest.approx(CUE_PEAK, abs=0.01)

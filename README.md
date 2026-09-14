@@ -77,6 +77,12 @@ and a spoken `“Yes?”` costs about a second of it on every single turn. Set
 cues are rendered once in the background and cached, and fall back to the chime
 until they are ready — or `none` for silence.
 
+The chime is levelled to the same target the spoken cues are normalised to.
+It used to carry a hardcoded amplitude instead, leaving it 11.5 dB below the
+spoken cue it stands in for — quiet enough on laptop speakers to read as no
+acknowledgement at all, so people said the wake word a second time, which is
+the exact problem the cue exists to prevent.
+
 **And it has to hear the word twice.** openWakeWord scores each 80 ms frame on
 its own, so a cough or a consonant off the television could clear the threshold
 once and count as a detection. The wake word actually spoken holds the score up
@@ -592,7 +598,21 @@ of the truth and a contact deleted on the phone should not survive here.
 Numbers you saved by voice live in a different file and win every collision —
 someone who spelled a number out loud meant that number.
 
-You never have to give the whole name. **"Message Rohit"** finds Rohit Sharma.
+You never have to give the whole name, and you never have to know how the
+contact was *spelled*. Phone books are not written to be spoken — the same
+person is `Sana Ahmed` in one app, `sana ❤️` in another, `Sana(Office)` at
+work and `सना` on a Hindi handset, and nobody pronounces a heart. Saying
+"sana" finds all of them: a name is reduced to the words a person would
+actually say before it is matched, reusing the same transliteration the command
+language already uses.
+
+Saying *more* narrows rather than widens. A subset scores a perfect match in
+both directions under plain token matching, so "sana ahmed" used to tie with a
+contact saved as plain `sana` and ask which you meant — punishing you for being
+precise. A word you said that a stored name does not contain now counts against
+it.
+
+**"Message Rohit"** finds Rohit Sharma.
 **"Email Sana"** finds the Sana who has an email address, because someone
 reachable on WhatsApp and not by email is not a candidate for Gmail. And when
 two people genuinely match, it asks once and then remembers:
@@ -602,6 +622,36 @@ you     “message Sana”        →  “Did you mean Sana Ahmed or Sana Khan?�
 you     “message Sana Ahmed”  →  sends
 you     “message Sana”        →  Sana Ahmed, no question
 ```
+
+### Sending mail, not just composing it
+
+"email Sana saying I'll send the report tomorrow" opens a pre-filled compose
+window and stops, which is honest but leaves the last click to you every time.
+Authorise Gmail once and the message actually goes:
+
+```
+python -m jarvis --authorise-gmail     # one browser consent, send-only access
+python -m jarvis --forget-gmail        # back to the compose window
+```
+
+It needs an OAuth client of your own, because a desktop client secret shipped
+inside a binary is a secret in name only — create one at
+[Google Cloud credentials](https://console.cloud.google.com/apis/credentials)
+as an **OAuth client ID → Desktop app**, enable the Gmail API, and save the
+downloaded JSON as `gmail_client_secret.json` in the data directory.
+`--doctor` prints the exact path and says which step is outstanding.
+
+Three things are deliberate. The scope is **`gmail.send` and nothing else** —
+it cannot read a single message, and an assistant that asks for mailbox access
+in order to send mail is asking for the wrong thing. Consent is a thing you do
+once, from the command line, never mid-sentence: being redirected to a browser
+because you said "email Sana" would be startling. And when it is not
+authorised, has expired, or the send fails, it falls back to the compose window
+that always worked — an unauthorised install loses nothing it had.
+
+The subject comes from the first clause of what you dictated, because nobody
+says "subject colon" out loud and asking turns a one-sentence errand into an
+interview.
 
 ### Which app a message goes to
 

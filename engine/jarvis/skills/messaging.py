@@ -36,6 +36,51 @@ from .registry import fail, ok, skill
 log = logging.getLogger(__name__)
 
 
+#: How much of a spoken message becomes the subject line when the user never
+#: said one. Long enough to be recognisable in an inbox, short enough not to
+#: repeat the whole message in the preview.
+_SUBJECT_WORDS = 8
+
+
+def _subject_from(body: str) -> str:
+    """A subject line for a message that was dictated, not composed.
+
+    Nobody says "subject colon" out loud, and asking for one turns a
+    one-sentence errand into an interview. The first clause of the message is
+    what a person would have written anyway, and it is honest — it promises
+    the reader exactly what the mail says.
+    """
+    first = re.split(r"(?<=[.!?])\s|\n", (body or "").strip(), maxsplit=1)[0]
+    words = first.split()
+    if not words:
+        return "(no subject)"
+    if len(words) <= _SUBJECT_WORDS:
+        return first.rstrip(".")
+    return " ".join(words[:_SUBJECT_WORDS]) + "…"
+
+
+def _send_by_api(address: str, body: str) -> tuple[bool, str]:
+    """Try to send through the Gmail API. False means use the browser instead.
+
+    Never starts an authorisation flow: being redirected to a consent page
+    because you said "email Sana" would be startling, and the middle of a
+    spoken turn is the worst moment to read a permissions dialog. Unauthorised
+    simply means the compose window, which has always worked.
+
+    A dry run never reaches here — `registry.execute` reports what it would do
+    and returns before the skill is called at all.
+    """
+    from .. import gmail_api
+
+    if not gmail_api.authorised():
+        return False, "not authorised"
+
+    sent, detail = gmail_api.send(address, _subject_from(body), body)
+    if not sent:
+        log.info("Gmail API send failed (%s) — opening the compose window", detail)
+    return sent, detail
+
+
 def _await_focus(process: str, timeout: float) -> bool:
     """Wait until `process` owns the focused window. False if it never does.
 
@@ -133,6 +178,21 @@ def send_message(to: str, message: str = "", app: str = "") -> object:
             detail="no contact match",
         )
 
+    named = who.name or target
+
+    # Gmail can send outright once the user has authorised it, which is the
+    # one platform here where the whole errand can finish without a window
+    # opening at all. Everything else — and Gmail before it is authorised —
+    # goes through the deep link below and is typed into the real app.
+    if chosen.address_kind == "email":
+        sent, detail = _send_by_api(who.address, body)
+        if sent:
+            return ok(
+                f"Sent to {named}.",
+                f"{named} ko bhej diya.",
+                detail=detail, to=who.address, contact=named, platform=chosen.id,
+            )
+
     link = messaging.build_link(chosen, who.address, body)
     if not link:
         return fail(
@@ -144,7 +204,6 @@ def send_message(to: str, message: str = "", app: str = "") -> object:
         return fail(f"I couldn't open {chosen.label}.",
                     f"{chosen.label} nahi khul paya.")
 
-    named = who.name or target
     if not settings.messaging.auto_send:
         return ok(
             f"{chosen.label} is open with your message to {named} \u2014 "

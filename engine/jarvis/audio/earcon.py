@@ -105,6 +105,11 @@ def chime(rate: int = RATE) -> np.ndarray:
     Shaped with a raised-cosine envelope: a bare sine switched on and off clicks
     audibly at both ends, and a click is the least reassuring sound a machine
     can make when you are trying to tell whether it heard you.
+
+    Levelled to `CUE_PEAK`, the same target the spoken cues are normalised to.
+    It used to carry a hardcoded amplitude instead, which left it 11.5 dB below
+    the spoken cue it stands in for — quiet enough on laptop speakers to read
+    as no acknowledgement at all, so people said the wake word again.
     """
     notes = ((587.3, 0.09), (783.99, 0.13))  # D5 then G5, the same rising fourth
     parts: list[np.ndarray] = []
@@ -115,8 +120,13 @@ def chime(rate: int = RATE) -> np.ndarray:
         # A touch of the octave above, at a tenth of the level. A pure sine reads
         # as a test tone; one quiet partial is enough to read as an instrument.
         tone = np.sin(2 * np.pi * frequency * t) + 0.1 * np.sin(4 * np.pi * frequency * t)
-        parts.append(tone * envelope * 0.11)
-    return np.concatenate(parts).astype(np.float32)
+        parts.append(tone * envelope)
+
+    clip = np.concatenate(parts).astype(np.float32)
+    peak = float(np.abs(clip).max())
+    if peak > 1e-6:
+        clip *= CUE_PEAK / peak
+    return clip
 
 
 class Acknowledger:

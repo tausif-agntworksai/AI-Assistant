@@ -73,6 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
     book.add_argument("--import-windows-contacts", action="store_true",
                       help="import the Windows address book (~/Contacts) — "
                            "no export and no sign-in needed")
+    book.add_argument("--authorise-gmail", action="store_true",
+                      help="one-time Gmail consent, so email can be sent "
+                           "without opening a browser each time")
+    book.add_argument("--forget-gmail", action="store_true",
+                      help="forget the Gmail token; email goes back to opening "
+                           "a compose window")
     book.add_argument("--list-contacts", action="store_true",
                       help="show what the assistant can address you to")
 
@@ -484,6 +490,25 @@ def cmd_doctor() -> int:
              if snapshot["has_key"] else "off — local speech only")
     except Exception as exc:  # noqa: BLE001
         line(fail, "speech selection", str(exc))
+
+    try:
+        from . import gmail_api
+
+        state = gmail_api.status()
+        if state["authorised"]:
+            line(ok, "gmail sending", "authorised — email sends without a browser")
+        elif not state["libraries"]:
+            line(warn, "gmail sending",
+                 "Google libraries not installed — email opens a compose window")
+        elif not state["client_configured"]:
+            line(warn, "gmail sending",
+                 f"no OAuth client at {state['client_path']} — "
+                 "email opens a compose window")
+        else:
+            line(warn, "gmail sending",
+                 "not authorised yet — run --authorise-gmail")
+    except Exception as exc:  # noqa: BLE001
+        line(fail, "gmail sending", str(exc))
         problems += 1
 
     print("\n" + "=" * 72)
@@ -588,6 +613,34 @@ def cmd_import_windows_contacts() -> int:
     return 0
 
 
+def cmd_authorise_gmail() -> int:
+    """The one-time consent. Deliberately not reachable from a spoken turn."""
+    from . import gmail_api
+
+    state = gmail_api.status()
+    if state["authorised"]:
+        print("  Gmail is already authorised. Use --forget-gmail to undo it.")
+        return 0
+
+    print("  Opening your browser for Google consent (send-only access)...")
+    ok_, message = gmail_api.authorise()
+    print(f"  {message}")
+    return 0 if ok_ else 1
+
+
+def cmd_forget_gmail() -> int:
+    from . import gmail_api
+
+    if not gmail_api.token_path().exists():
+        print("  Gmail was not authorised.")
+        return 0
+    if gmail_api.sign_out():
+        print("  Gmail token removed. Email will open a compose window again.")
+        return 0
+    print("  Could not remove the token.")
+    return 1
+
+
 def cmd_list_contacts() -> int:
     from . import contacts
 
@@ -634,6 +687,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_import_contacts(args.import_contacts)
     if args.import_windows_contacts:
         return cmd_import_windows_contacts()
+    if args.authorise_gmail:
+        return cmd_authorise_gmail()
+    if args.forget_gmail:
+        return cmd_forget_gmail()
     if args.list_contacts:
         return cmd_list_contacts()
     if args.text:

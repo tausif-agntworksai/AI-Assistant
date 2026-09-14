@@ -67,6 +67,12 @@ pydantic-settings>=2.6
 PyYAML>=6.0.3
 python-dotenv>=1.0
 
+# --- Gmail (optional: sending without opening a browser) ---
+# Only needed if the user authorises Gmail. Every import is lazy and wrapped,
+# so an install without these still composes mail in the browser as before.
+google-api-python-client>=2.140
+google-auth-oauthlib>=1.2
+
 # --- Misc ---
 requests>=2.32
 
