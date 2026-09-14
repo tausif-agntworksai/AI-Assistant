@@ -95,10 +95,14 @@ class OpenWakeWord(WakeWordDetector):
         if now - self._last_fire < self.cooldown_sec:
             return False
         self._last_fire = now
+        # Read the window before resetting it, or the log reports the empty
+        # window rather than the one that caused the detection — every line
+        # said "0/0 frames", which is exactly the number a person checking
+        # whether confirmation works would most like to see.
+        hits, window = sum(self._recent), len(self._recent)
         self.reset()  # clear feature buffers so the next detection starts clean
         log.info(
-            "Wake word detected (score %.2f, %d/%d frames)",
-            score, sum(self._recent), len(self._recent),
+            "Wake word detected (score %.2f, %d/%d frames)", score, hits, window,
         )
         return True
 

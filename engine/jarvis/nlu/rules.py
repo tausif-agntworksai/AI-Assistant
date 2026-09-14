@@ -239,6 +239,33 @@ _QUESTION_HEADS = frozenset({
 _QUESTION_BODIES = _QUESTION_HEADS - {"a", "an", "the"}
 
 
+#: A spoken phone number, however the decoder grouped it. Ten digits minimum,
+#: which is what `normalise_phone` will accept downstream.
+_PHONE = r"(?P<phone>[+\d][\d\s-]{8,}\d)"
+
+
+def _contact(m: re.Match[str], text: str, raw: str) -> dict[str, Any]:
+    """Build add_contact arguments from "save Sana's number as ...".
+
+    The possessive has to be recovered from the raw utterance. Normalisation
+    drops the apostrophe, so "save sana's number" arrives here as "sanas", and
+    storing the contact under that spelling would be a small permanent lie —
+    every later lookup would be matching against a name the user never uses.
+    """
+    name = (m.groupdict().get("name") or "").strip()
+    phone = re.sub(r"\D", "", m.groupdict().get("phone") or "")
+
+    if name.endswith("s") and re.search(rf"\b{re.escape(name[:-1])}'s\b",
+                                        raw, re.IGNORECASE):
+        name = name[:-1]
+
+    if not name or len(phone) < 10:
+        raise SkipRule("a contact needs a name and a full number")
+    if name.split()[0].lower() in _QUESTION_HEADS:
+        raise SkipRule("that is a question, not a name")
+    return {"name": name, "phone": phone}
+
+
 def _message(m: re.Match[str], text: str, raw: str) -> dict[str, Any]:
     """Build send_message arguments, taking the body from the raw utterance.
 
@@ -609,6 +636,22 @@ RULES: list[tuple[re.Pattern[str], str, Builder]] = [
     # ("bol do ki main aa raha hoon") has to be tried before the bare form
     # ("hi bol do"), or the latter claims the utterance and the message becomes
     # the single word "ki".
+    # --- saving a contact ---
+    #
+    # Before the messaging rules, or "save sana's number as 9876543210" parses
+    # as a message to Sana whose body is her own phone number. Offline on
+    # purpose: this is the one command that repairs an empty contact book, and
+    # needing a working model key to add a contact is a poor trade.
+    (_rx(rf"^(?:save|add|store)\s+(?:the\s+)?(?:contact\s+)?(?P<name>.+?)"
+         rf"(?:\s+ka)?\s+(?:number|phone|contact|mobile)\s+"
+         rf"(?:as\s+|is\s+|=\s*)?{_PHONE}$"),
+     "add_contact", _contact),
+    (_rx(rf"^(?P<name>.+?)\s+(?:ka|ki)\s+(?:number|phone|mobile)\s+"
+         rf"(?:save|add|store)\s+(?:karo|kar\s+do|kar\s+dijiye)?\s*{_PHONE}$"),
+     "add_contact", _contact),
+    (_rx(rf"^(?:save|add|store)\s+(?:contact\s+)?(?P<name>.+?)\s+{_PHONE}$"),
+     "add_contact", _contact),
+
     # "send a message to sana on google chat saying ...". The generic
     # "send <msg> to <who>" rule below reads "a message" as the body and the
     # rest of the sentence as the name, so this has to come first.

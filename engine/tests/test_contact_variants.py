@@ -111,3 +111,69 @@ def test_a_remembered_choice_survives_decoration():
 ])
 def test_the_match_key_is_what_a_person_would_say(stored, key):
     assert messaging.match_key(stored) == key
+
+
+# --- repairing an empty contact book, offline ------------------------------
+#
+# This is the command that gets the first number in, so it is the one command
+# that must not need a working model key: an assistant that can only learn a
+# contact when it has cloud access cannot be set up offline at all.
+
+
+@pytest.mark.parametrize("spoken, name, phone", [
+    ("save sana's number as 9876543210", "sana", "9876543210"),
+    ("save sana ka number 9876543210", "sana", "9876543210"),
+    ("sana ka number save karo 9876543210", "sana", "9876543210"),
+    ("add contact sana 9876543210", "sana", "9876543210"),
+    ("store rohit number 9876500001", "rohit", "9876500001"),
+    ("save mom's number as +91 98765 43210", "mom", "919876543210"),
+])
+def test_saving_a_number_routes_offline(spoken, name, phone):
+    from jarvis.nlu.rules import route
+
+    intent = route(spoken)
+    assert intent is not None and intent.skill == "add_contact"
+    assert intent.args == {"name": name, "phone": phone}
+
+
+def test_a_name_that_really_ends_in_s_is_not_truncated():
+    """The possessive is recovered from the raw utterance, not guessed at by
+    chopping a trailing letter."""
+    from jarvis.nlu.rules import route
+
+    assert route("add contact charles 9876543210").args["name"] == "charles"
+
+
+def test_saving_a_number_is_not_read_as_a_message():
+    """Without ordering, "save sana's number as 9876543210" parses as a
+    message to Sana whose body is her own phone number."""
+    from jarvis.nlu.rules import route
+
+    assert route("save sana's number as 9876543210").skill == "add_contact"
+
+
+@pytest.mark.parametrize("spoken", [
+    "save sana's number", "add contact sana", "save sana ka number 12345",
+])
+def test_an_incomplete_number_is_not_saved(spoken):
+    """Half a phone number stored under a name is worse than no contact."""
+    from jarvis.nlu.rules import route
+
+    intent = route(spoken)
+    assert intent is None or intent.skill != "add_contact"
+
+
+def test_saving_then_messaging_closes_the_loop(tmp_path, monkeypatch):
+    """The whole point: one spoken command makes the next one work."""
+    from jarvis.skills import load_all, registry
+    from jarvis.skills.registry import SkillContext
+
+    load_all()
+    monkeypatch.setattr(contacts.store.paths, "STORE_DIR", tmp_path)
+    monkeypatch.setattr(contacts.store.paths, "ensure_dirs", lambda: None)
+
+    assert messaging.resolve_recipient("sana").found is False
+    registry.execute("add_contact", {"name": "sana", "phone": "919876543210"},
+                     SkillContext())
+    who = messaging.resolve_recipient("sana")
+    assert who.found and who.phone == "919876543210"

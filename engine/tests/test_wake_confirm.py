@@ -92,3 +92,19 @@ def test_the_cooldown_still_applies():
     detector = _Scripted([0.9] * 6, cooldown_sec=60.0)
     fires = sum(1 for _ in range(6) if detector.triggered(FRAME))
     assert fires == 1
+
+
+def test_the_log_reports_the_window_that_fired(caplog):
+    """It read the window *after* clearing it, so every detection logged
+    "0/0 frames" -- the one number someone checking the confirmation logic
+    would most want, reported as nothing."""
+    import logging
+
+    detector = _Scripted([0.9, 0.9])
+    with caplog.at_level(logging.INFO, logger="jarvis.audio.wakeword"):
+        detector.triggered(FRAME)
+        assert detector.triggered(FRAME) is True
+
+    line = [r.getMessage() for r in caplog.records if "Wake word detected" in r.getMessage()]
+    assert line and "0/0" not in line[-1], line
+    assert "2/2" in line[-1]

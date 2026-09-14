@@ -69,19 +69,22 @@ without a word — answering a conversation you were not having with it is most
 of what "it wakes up on its own" actually is. Three follow-ups back to back end
 the chain, so one detection cannot hold the microphone open indefinitely.
 
-**The wake word answers back** with a 140 ms rising chime, so you know you were
-heard rather than saying it twice. Latency is the whole constraint: the listen
-loop drops every microphone frame while the cue plays, so the cue is dead time
-and a spoken `“Yes?”` costs about a second of it on every single turn. Set
-`wake_word.acknowledge` to `voice` to be answered in words instead — the spoken
-cues are rendered once in the background and cached, and fall back to the chime
-until they are ready — or `none` for silence.
+**The wake word answers back** in words — `“Yes?”`, `“Yeah?”`, `“I'm here.”`,
+rotated so it doesn't sound like a recording, or `“जी?”` if the last turn was
+Hindi — so you know you were heard rather than saying it twice.
 
-The chime is levelled to the same target the spoken cues are normalised to.
-It used to carry a hardcoded amplitude instead, leaving it 11.5 dB below the
-spoken cue it stands in for — quiet enough on laptop speakers to read as no
-acknowledgement at all, so people said the wake word a second time, which is
-the exact problem the cue exists to prevent.
+The cue is dead time: the listen loop drops every microphone frame while it
+plays, so anything said over it is lost. That argued for a short chime, and for
+a while that was the default. It was the wrong call twice over. The chime was
+being built at a hardcoded amplitude while the spoken cues were levelled, which
+left it **11.5 dB quieter** than the thing it replaced — quiet enough to read as
+no answer at all. And the latency it was buying back is smaller than it looks:
+the spoken cues are rendered once and cached, so they measure 630 ms against the
+chime's 220 ms. Words cost **410 ms**, not the second it would take to
+synthesise one per turn.
+
+Set `wake_word.acknowledge` to `chime` to have those 410 ms back — it is
+levelled to the same target now — or `none` for silence.
 
 **And it has to hear the word twice.** openWakeWord scores each 80 ms frame on
 its own, so a cough or a consonant off the television could clear the threshold

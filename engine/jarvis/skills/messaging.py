@@ -81,6 +81,64 @@ def _send_by_api(address: str, body: str) -> tuple[bool, str]:
     return sent, detail
 
 
+def _same_program(current: str, wanted: str) -> bool:
+    """Whether two executable names are the same program.
+
+    Exact equality was wrong in the one case that matters most. The Store
+    build of WhatsApp runs as `WhatsApp.Root.exe`, not `WhatsApp.exe`, so the
+    focus check never matched, Enter was never pressed, and every message
+    stopped one keystroke short with "it didn't come to the front in time" —
+    a message that was not even true.
+
+    Compared on the first dot-separated component, which is the program's own
+    name; what follows is the vendor's business (`.Root`, a channel, a
+    version) and never distinguishes one application from another.
+    """
+    def stem(name: str) -> str:
+        return name.lower().removesuffix(".exe").split(".")[0].strip()
+
+    left, right = stem(current), stem(wanted)
+    return bool(left) and left == right
+
+
+def _search_in_app(app, name: str, timeout: float) -> bool:
+    """Put `name` into the app's own search box. True if it got there.
+
+    The app knows the contact even when we do not. WhatsApp has "Sana ❤️" in
+    its list whether or not anything was ever imported into Jarvis, so the
+    useful thing to do with a name and no number is hand the name to the
+    program that can already find it — the difference between landing on the
+    right chat and being dropped at a list of everyone.
+
+    Deliberately stops at the search results. Pressing Enter would open
+    whichever chat happened to rank first, and "first result" is not a
+    standard worth messaging a stranger over.
+    """
+    if not app.search_keys or not name.strip():
+        return False
+    if not _await_focus(app.process, timeout):
+        return False
+    if not winutil.send_keys(*app.search_keys):
+        return False
+
+    # A beat for the search field to take focus before anything is typed, for
+    # the same reason the send path waits: the keystrokes land wherever focus
+    # is at that instant, not where it is about to be.
+    time.sleep(0.4)
+    if not _same_program(str(winutil.foreground_window().get("process", "")),
+                         app.process):
+        return False
+
+    try:
+        import pyautogui
+
+        pyautogui.write(name, interval=0.01)
+    except Exception as exc:  # noqa: BLE001 - a failed search is not a failed turn
+        log.info("Could not type the search term (%s)", exc)
+        return False
+    return True
+
+
 def _await_focus(process: str, timeout: float) -> bool:
     """Wait until `process` owns the focused window. False if it never does.
 
@@ -91,17 +149,17 @@ def _await_focus(process: str, timeout: float) -> bool:
     if not process:
         return False
     deadline = time.monotonic() + timeout
-    wanted = process.lower()
+    wanted = process
     while time.monotonic() < deadline:
-        current = str(winutil.foreground_window().get("process", "")).lower()
-        if current == wanted:
+        current = str(winutil.foreground_window().get("process", ""))
+        if _same_program(current, wanted):
             # Focus has landed, but the chat pane may still be painting and the
             # pre-filled text is placed by the app itself. A beat here is the
             # difference between sending the message and sending an empty one.
             time.sleep(0.6)
-            return str(
-                winutil.foreground_window().get("process", "")
-            ).lower() == wanted
+            return _same_program(
+                str(winutil.foreground_window().get("process", "")), wanted
+            )
         time.sleep(0.15)
     log.info("%s never took focus — leaving the draft unsent", process)
     return False
@@ -163,6 +221,21 @@ def send_message(to: str, message: str = "", app: str = "") -> object:
         link = messaging.build_link(chosen, "", body)
         if link:
             winutil.shell_open(link)
+
+        # We have a name and no number, but the app has both. Handing the name
+        # to its search leaves the user one click from the right chat instead
+        # of staring at a list.
+        if _search_in_app(chosen, target, settings.messaging.focus_timeout_sec):
+            return ok(
+                f"I don't have a number saved for {target}, so I've opened "
+                f"{chosen.label} and searched for them \u2014 pick the chat and "
+                "I'll remember the number if you tell me.",
+                f"{target} ka number save nahi hai, isliye {chosen.label} mein "
+                f"unhe search kar diya hai \u2014 chat chun lijiye.",
+                detail=f"searched {chosen.id} for {target!r}",
+                searched=target, platform=chosen.id,
+            )
+
         # Gmail addresses people by email, WhatsApp by number, and telling
         # someone to save a "number" for Gmail sends them looking for the
         # wrong thing.

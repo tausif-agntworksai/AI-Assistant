@@ -62,12 +62,18 @@ class WakeWordConfig(BaseModel):
     #           what you say next, and language-neutral.
     #   none  — silence, as it was before.
     #
-    # `chime` is the default because the cue is dead time: the listen loop
-    # drops every microphone frame while it plays, so whatever you say over it
-    # is lost. A spoken "I'm listening." is about a second of that on every
-    # single turn; the chime is 140 ms. Set this to `voice` if you would
-    # rather be answered in words and don't mind waiting through them.
-    acknowledge: Literal["voice", "chime", "none"] = "chime"
+    # `voice` is the default because a cue you are not sure you heard is worth
+    # nothing: the whole job of this sound is to stop you saying the wake word
+    # a second time, and a blip does not do that for everyone.
+    #
+    # The cue is dead time -- the listen loop drops every microphone frame
+    # while it plays -- so the cost is real, but smaller than it sounds. The
+    # cached spoken cues measure 630 ms against the chime's 220 ms, and they
+    # are rendered once and reused, so the difference is 410 ms rather than
+    # the second it would cost to synthesise one per turn.
+    #
+    # Set `chime` if you would rather have those 410 ms back.
+    acknowledge: Literal["voice", "chime", "none"] = "voice"
     #: How many of the last `confirm_window` frames must clear the threshold
     #: before this counts as a detection. openWakeWord scores every 80 ms
     #: frame independently, so a single spike — a cough, a consonant off the

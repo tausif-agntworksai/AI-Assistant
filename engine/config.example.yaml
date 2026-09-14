@@ -26,10 +26,11 @@ wake_word:
   # than saying it again. voice = a short spoken "Yes?" / "जी?" in the language
   # of the last turn; chime = a 140 ms rising blip, instant and never overlaps
   # your next words; none = silence.
-  # chime is the default because the cue is dead time: the listen loop drops
-  # every microphone frame while it plays, so anything said over it is lost.
-  # A spoken "I'm listening." is about a second of that on every turn.
-  acknowledge: chime       # voice | chime | none
+  # The cue is dead time -- the listen loop drops every microphone frame while
+  # it plays -- but a cue you are not sure you heard is worth nothing, and its
+  # whole job is to stop you saying the wake word twice. The cached spoken
+  # cues measure 630 ms against the chime's 220 ms, so words cost 410 ms.
+  acknowledge: voice       # voice | chime | none
   # How many of the last `confirm_window` 80 ms frames must clear the
   # threshold. One frame is short enough for a cough or a consonant off the
   # television to clear it; the wake word actually spoken holds the score up

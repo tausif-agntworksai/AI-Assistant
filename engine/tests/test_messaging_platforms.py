@@ -119,3 +119,63 @@ def test_google_chat_opens_without_pretending_to_address_anyone():
 def test_an_unknown_platform_still_sends():
     """Refusing over the transport helps nobody — who and what were understood."""
     assert messaging.resolve_app("hike").id == "whatsapp"
+
+
+# --- reaching the app that already knows the contact -----------------------
+
+
+def test_the_store_build_of_whatsapp_is_recognised():
+    """The live bug behind "it didn't come to the front in time".
+
+    The Store build runs as WhatsApp.Root.exe, not WhatsApp.exe, so an exact
+    comparison never matched, Enter was never pressed, and every message
+    stopped one keystroke short -- reporting a focus timeout that had not
+    actually happened.
+    """
+    from jarvis.skills.messaging import _same_program
+
+    assert _same_program("WhatsApp.Root.exe", "WhatsApp.exe")
+    assert _same_program("whatsapp.exe", "WhatsApp.exe")
+
+
+@pytest.mark.parametrize("current", ["chrome.exe", "WhatsAppInstaller.exe", ""])
+def test_another_program_is_not_mistaken_for_the_target(current):
+    """This guard is the only thing standing between a draft and a stray
+    Enter into whatever happened to be focused."""
+    from jarvis.skills.messaging import _same_program
+
+    assert not _same_program(current, "WhatsApp.exe")
+
+
+def test_whatsapp_declares_how_to_reach_its_search():
+    """With a name and no number, the app can still find the person."""
+    assert messaging.resolve_app("whatsapp").search_keys == ("ctrl", "f")
+
+
+def test_an_app_without_a_search_box_is_not_typed_into(monkeypatch):
+    from jarvis.skills import messaging as skill
+
+    monkeypatch.setattr(skill, "_await_focus",
+                        lambda *a: pytest.fail("should not have waited"))
+    assert skill._search_in_app(messaging.resolve_app("sms"), "sana", 1.0) is False
+
+
+def test_nothing_is_typed_when_the_app_never_takes_focus(monkeypatch):
+    """Otherwise the contact's name is typed into whatever is in front."""
+    from jarvis.skills import messaging as skill
+
+    monkeypatch.setattr(skill, "_await_focus", lambda *a: False)
+    monkeypatch.setattr(skill.winutil, "send_keys",
+                        lambda *k: pytest.fail("should not have pressed keys"))
+    assert skill._search_in_app(messaging.resolve_app("whatsapp"), "sana", 1.0) is False
+
+
+def test_focus_is_rechecked_after_the_shortcut(monkeypatch):
+    """Focus can move between opening search and typing into it."""
+    from jarvis.skills import messaging as skill
+
+    monkeypatch.setattr(skill, "_await_focus", lambda *a: True)
+    monkeypatch.setattr(skill.winutil, "send_keys", lambda *k: True)
+    monkeypatch.setattr(skill.winutil, "foreground_window",
+                        lambda: {"process": "chrome.exe"})
+    assert skill._search_in_app(messaging.resolve_app("whatsapp"), "sana", 1.0) is False

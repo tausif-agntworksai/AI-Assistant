@@ -75,6 +75,11 @@ class App:
     #: this decides which column a lookup reads rather than forcing a second
     #: resolver per platform.
     address_kind: str = "phone"
+    #: The keys that focus this app's own search box. Used when we have a name
+    #: but no number: the app already knows the contact even when we do not,
+    #: so putting the name into its search is the difference between landing
+    #: on the right chat and being dropped at a list of everyone.
+    search_keys: tuple[str, ...] = ()
 
 
 APPS: tuple[App, ...] = (
@@ -87,6 +92,7 @@ APPS: tuple[App, ...] = (
         deep_link="https://wa.me/{phone}?text={text}",
         fallback="whatsapp://",
         process="WhatsApp.exe",
+        search_keys=("ctrl", "f"),
     ),
     App(
         id="sms",
